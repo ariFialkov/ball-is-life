@@ -2,6 +2,8 @@
 
 A 3D basketball betting game in the style of the modern NBA 2K menus and gameplay, built as an installable PWA that runs on desktop and mobile. Every round is a bet. The front end plays like a skill-based sports game; the backend resolves every round as a strictly deterministic, RTP-controlled betting game and the on-court bots are steered to reproduce that result.
 
+**Play it:** https://arifialkov.github.io/ball-is-life/ (auto-deployed from `main` by `.github/workflows/deploy-pages.yml`)
+
 ## Quick start
 
 ```bash
