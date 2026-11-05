@@ -264,14 +264,21 @@ export class Arena {
       }
     }
     // Upper deck facade band in team colour.
-    const band = new THREE.Mesh(
-      new THREE.BoxGeometry((inner.x + rows * 0.95) * 2 + 4, 1.2, (inner.z + rows * 0.95) * 2 + 4),
-      new THREE.MeshStandardMaterial({ color: team.colors.primary, emissive: new THREE.Color(team.colors.primary).multiplyScalar(0.25), roughness: 0.5 }),
-    );
-    band.position.y = 0.45 + rows * 0.42 + 1.2;
-    const bandInner = new THREE.Mesh(new THREE.BoxGeometry((inner.x + rows * 0.95) * 2 - 1, 1.3, (inner.z + rows * 0.95) * 2 - 1), new THREE.MeshBasicMaterial({ color: 0x05060a }));
-    bandInner.position.copy(band.position);
-    grp.add(band, bandInner);
+    // Upper deck facade: a thin ring of four slabs (not a solid box, so cameras above it still see the court).
+    const bandMat = new THREE.MeshStandardMaterial({ color: team.colors.primary, emissive: new THREE.Color(team.colors.primary).multiplyScalar(0.25), roughness: 0.5 });
+    const bx = inner.x + rows * 0.95 + 1.5;
+    const bz = inner.z + rows * 0.95 + 1.5;
+    const by = 0.45 + rows * 0.42 + 1.2;
+    for (const [w, d, x, z] of [
+      [bx * 2 + 1, 0.5, 0, bz],
+      [bx * 2 + 1, 0.5, 0, -bz],
+      [0.5, bz * 2 + 1, bx, 0],
+      [0.5, bz * 2 + 1, -bx, 0],
+    ]) {
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(w, 1.2, d), bandMat);
+      slab.position.set(x, by, z);
+      grp.add(slab);
+    }
     // Scorer's table.
     const table = new THREE.Mesh(new THREE.BoxGeometry(9, 0.8, 0.8), new THREE.MeshStandardMaterial({ color: team.colors.secondary, emissive: new THREE.Color(team.colors.primary).multiplyScalar(0.3) }));
     table.position.set(0, 0.4, -(HALF_W + 1.4));
