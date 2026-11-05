@@ -1,0 +1,25 @@
+{
+  "name": "ball-is-life",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ball is Life - a 3D basketball betting game (PWA) with a deterministic RTP outcome engine",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "rtp:audit": "vitest run tests/rtp.audit.test.ts",
+    "server": "node --experimental-strip-types server/server.mjs"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.0",
+    "vitest": "^5.1.0"
+  }
+}
