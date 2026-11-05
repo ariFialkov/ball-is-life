@@ -72,6 +72,7 @@ export class Hud {
     this.pauseBtn.addEventListener('click', () => this.onPause?.());
     this.stripEl.textContent = ctx.strip;
     this.debugEl.style.display = match.debug ? '' : 'none';
+    this.update(0, match, []);
   }
 
   setStrip(text: string) {

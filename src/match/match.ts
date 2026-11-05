@@ -1007,7 +1007,7 @@ export class Match {
     } else {
       a.target.set(man.pos.x + (dx / len) * off, 0, man.pos.z + (dz / len) * off);
     }
-    a.sprint = hdist(a.pos, a.target) > 4 || (guardingBall && ballHandler!.sprint);
+    a.sprint = hdist(a.pos, a.target) > 4 || (guardingBall && (ballHandler!.sprint || myForce));
     // Transition: if the offense is far upcourt, get back first.
     if (ballHandler && Math.abs(ballHandler.pos.x - basket.x) > 15) {
       a.target.set(basket.x - this.attackDir(man.team) * (4 + a.slot * 1.3), 0, (a.slot - 2) * 2.2);
@@ -1018,7 +1018,7 @@ export class Match {
       const d = hdist(a.pos, ballHandler.pos);
       if ((ballHandler.action.type === 'shoot' || ballHandler.action.type === 'layup') && ballHandler.action.t < 0.25 && d < 1.7 && a.action.type === 'none' && a.cooldown <= 0) {
         if (this.rng.chance(theirForce ? 0.15 : myForce ? 0.95 : 0.6)) this.startAction(a, 'block');
-      } else if (d < 1.25 && a.action.type === 'none' && a.cooldown <= 0 && ballHandler.action.type === 'none') {
+      } else if (d < (myForce ? 1.6 : 1.25) && a.action.type === 'none' && a.cooldown <= 0 && (ballHandler.action.type === 'none' || ballHandler.action.type === 'crossover')) {
         const rate = myForce ? 2.2 : theirForce ? 0.04 : 0.09 + a.def.ratings.steal / 1000;
         if (this.rng.chance(dt * rate)) this.startAction(a, 'steal');
       }
@@ -1305,7 +1305,7 @@ export class Match {
   private resolveSteal(a: Athlete, mods: ReturnType<Director['mods']> | null) {
     const h = this.holder;
     if (!h || h.team === a.team) return;
-    if (hdist(a.pos, h.pos) > 1.2) return;
+    if (hdist(a.pos, h.pos) > (mods && mods.force > 0 ? 1.6 : 1.2)) return;
     if (h.action.type === 'shoot' || h.action.type === 'layup' || h.action.type === 'dunk') return;
     const disruption = mods ? (a.team === 1 ? mods.oppSteal : mods.userSteal) : 1;
     let p = 0.22 * (a.def.ratings.steal / 80) * (80 / h.def.ratings.handle) * disruption;

@@ -19,7 +19,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 body { position: fixed; inset: 0; touch-action: none; user-select: none; -webkit-user-select: none; }
 button { font-family: inherit; color: inherit; }
 #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-#ui { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; pointer-events: none; }
+#ui { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; pointer-events: none; z-index: 2; }
 #ui > * { pointer-events: auto; }
 #overlay { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
 #overlay > * { pointer-events: auto; }

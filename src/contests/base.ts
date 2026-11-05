@@ -38,6 +38,7 @@ export class ContestScene {
     app.renderer.scene.add(this.group);
     app.camera.mode = 'contest';
     app.camera.attackDir = this.side;
+    app.camera.prime(new THREE.Vector3(this.side * (RIM_X - 7.5), 0, 0));
     this.hud = h('div', { class: 'hud' });
     this.hud.innerHTML = `
       <div class="hud-strip"></div>

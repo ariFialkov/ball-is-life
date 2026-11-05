@@ -34,7 +34,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
   (window as any).__match = match;
   app.camera.mode = store.data.settings.camera;
   app.camera.attackDir = match.attackDir(match.possession);
-  app.camera.snap();
+  app.camera.prime(match.ball.pos);
   const hud = new Hud(app.overlay, match, app.renderer.camera, app.input, { strip: opts.strip });
   const touchSetting = store.data.settings.touch;
   const showTouch = touchSetting === 'on' || (touchSetting === 'auto' && app.mobile);
@@ -44,6 +44,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
   let finished = false;
   let simOverlay: HTMLElement | null = null;
   let simTimer = 0;
+  let pendingBanner: string | null = null;
 
   const closeDialog = () => {
     dialog?.remove();
@@ -87,7 +88,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
     startSim('WARMING UP');
     match.fastForwardToNextMoment();
     (simOverlay!.querySelector('.scoreline') as HTMLElement).textContent = `${match.scores[0]} – ${match.scores[1]}`;
-    hud.banner(`${opts.matchOptions.career.player.last.toUpperCase()} CHECKS IN`, 2.5);
+    pendingBanner = `${opts.matchOptions.career.player.last.toUpperCase()} CHECKS IN`;
   }
 
   const destroy = () => {
@@ -110,6 +111,11 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
         if (simTimer <= 0) {
           simOverlay.remove();
           simOverlay = null;
+          if (pendingBanner) {
+            hud.banner(pendingBanner, 2.2);
+            pendingBanner = null;
+          }
+          hud.update(0, match, []);
         }
         return;
       }
@@ -121,6 +127,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
       if (opts.matchOptions.career && match.momentOver && match.phase === 'live' && !match.ball.shot) {
         const more = match.fastForwardToNextMoment();
         startSim(more ? 'BACK ON THE BENCH' : 'FINAL STRETCH');
+        if (more) pendingBanner = `${opts.matchOptions.career.player.last.toUpperCase()} CHECKS BACK IN`;
         if (!more) {
           // No more moments: the rest of the game is simulated.
           simTimer = 2.2;

@@ -25,6 +25,14 @@ export class CameraRig {
     this.look.copy(this.targetLook);
   }
 
+  /** Compute the targets for the current mode and jump straight to them. */
+  prime(focus: THREE.Vector3) {
+    this.update(0.0001, focus, 0);
+    this.snap();
+    this.camera.position.copy(this.pos);
+    this.camera.lookAt(this.look);
+  }
+
   /**
    * @param focus the ball position
    * @param dt frame time
@@ -45,10 +53,17 @@ export class CameraRig {
         this.targetPos.set(focus.x + Math.sin(t * 0.12) * 2.5, 1.7, 6.4 + Math.cos(t * 0.1) * 0.6);
         this.targetLook.set(focus.x, 1.25, 0);
         break;
-      case 'contest':
-        this.targetPos.set(focus.x - this.attackDir * 7.5, 3.2, focus.z * 0.5 + 4.2);
-        this.targetLook.set(this.attackDir * RIM_X - this.attackDir * 1.5, RIM_H - 0.8, 0);
+      case 'contest': {
+        // Behind the shooter, framing both the player and the hoop.
+        const rx = this.attackDir * RIM_X;
+        const dx = rx - focus.x;
+        const dz = -focus.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const back = this.portrait ? 7 : 5.5;
+        this.targetPos.set(focus.x - (dx / len) * back + (dz / len) * 1.6, this.portrait ? 4.2 : 3.0, focus.z - (dz / len) * back - (dx / len) * 1.6);
+        this.targetLook.set(focus.x + dx * 0.55, 1.9, focus.z + dz * 0.55);
         break;
+      }
     }
     const k = this.mode === 'cinematic' ? Math.min(1, dt * 1.6) : Math.min(1, dt * 4.5);
     this.pos.lerp(this.targetPos, k);

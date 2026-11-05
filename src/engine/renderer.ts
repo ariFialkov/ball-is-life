@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export const isMobile = () => /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth < 1100);
+export const isMobile = () => /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 0 && Math.min(window.innerWidth, window.innerHeight) < 900);
 
 /** Thin wrapper around the WebGL renderer with resize + a shared scene/camera. */
 export class Renderer {
