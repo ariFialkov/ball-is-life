@@ -60,7 +60,7 @@ export function drawLogo(ctx: CanvasRenderingContext2D, size: number, team: Team
   ctx.restore();
 }
 
-function drawMotif(ctx: CanvasRenderingContext2D, s: number, motif: LogoMotif, color: string, accent: string) {
+export function drawMotif(ctx: CanvasRenderingContext2D, s: number, motif: LogoMotif, color: string, accent: string) {
   const u = s / 100;
   ctx.fillStyle = color;
   ctx.strokeStyle = color;

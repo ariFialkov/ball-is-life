@@ -35,6 +35,8 @@ export interface PlayerDef {
 }
 
 export interface Kit {
+  /** Owning team id (drives logos and the themed jersey pattern). */
+  teamId: string;
   jersey: string;
   trim: string;
   shorts: string;
@@ -196,8 +198,8 @@ function buildTeam(seed: TeamSeed): TeamDef {
     motif: seed.motif,
     arena: { name: seed.arena, capacity: seed.capacity, city: seed.city },
     kits: {
-      home: { jersey: '#f7f7f7', trim: seed.primary, shorts: '#f7f7f7', number: seed.primary },
-      away: { jersey: seed.primary, trim: seed.secondary, shorts: seed.primary, number: light ? seed.secondary : '#ffffff' },
+      home: { teamId: seed.id, jersey: '#f7f7f7', trim: seed.primary, shorts: '#f7f7f7', number: seed.primary },
+      away: { teamId: seed.id, jersey: seed.primary, trim: seed.secondary, shorts: seed.primary, number: light ? seed.secondary : '#ffffff' },
     },
     style: seed.style,
     roster,

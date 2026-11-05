@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import type { Kit, PlayerDef } from '../data/teams.ts';
+import { teamById, type Kit, type PlayerDef } from '../data/teams.ts';
+import { buildBody, type BuiltBody, type SkeletonBone } from './body.ts';
+import { J } from './bodyShape.ts';
+import { kitFontPromise } from './jersey.ts';
 
 export type AnimState =
   | 'idle'
@@ -17,8 +20,29 @@ export type AnimState =
   | 'dejected'
   | 'catch';
 
-type BoneName = 'spine' | 'head' | 'lShoulder' | 'lElbow' | 'rShoulder' | 'rElbow' | 'lHip' | 'lKnee' | 'rHip' | 'rKnee';
-const BONES: BoneName[] = ['spine', 'head', 'lShoulder', 'lElbow', 'rShoulder', 'rElbow', 'lHip', 'lKnee', 'rHip', 'rKnee'];
+/**
+ * Pose channels. `spine` and `head` are the authored bends; at apply time they
+ * are distributed over the two-piece spine (spine + chest) and the neck so the
+ * body curves instead of hinging. `chest`, `neck`, wrists and ankles add on top.
+ */
+type BoneName =
+  | 'spine'
+  | 'chest'
+  | 'neck'
+  | 'head'
+  | 'lShoulder'
+  | 'lElbow'
+  | 'lWrist'
+  | 'rShoulder'
+  | 'rElbow'
+  | 'rWrist'
+  | 'lHip'
+  | 'lKnee'
+  | 'lAnkle'
+  | 'rHip'
+  | 'rKnee'
+  | 'rAnkle';
+const BONES: BoneName[] = ['spine', 'chest', 'neck', 'head', 'lShoulder', 'lElbow', 'lWrist', 'rShoulder', 'rElbow', 'rWrist', 'lHip', 'lKnee', 'lAnkle', 'rHip', 'rKnee', 'rAnkle'];
 
 interface Pose {
   bones: Record<BoneName, [number, number, number]>;
@@ -28,22 +52,8 @@ interface Pose {
   jump: number;
 }
 
-const SKIN_TONES = ['#f1c9a5', '#d9a071', '#b67a4f', '#8a5a3a', '#5b3a26'];
-const HAIR = ['#111111', '#2a1a0a', '#4a2f1a', '#151515'];
-
 const emptyPose = (): Pose => ({
-  bones: {
-    spine: [0, 0, 0],
-    head: [0, 0, 0],
-    lShoulder: [0, 0, 0],
-    lElbow: [0, 0, 0],
-    rShoulder: [0, 0, 0],
-    rElbow: [0, 0, 0],
-    lHip: [0, 0, 0],
-    lKnee: [0, 0, 0],
-    rHip: [0, 0, 0],
-    rKnee: [0, 0, 0],
-  },
+  bones: Object.fromEntries(BONES.map((b) => [b, [0, 0, 0]])) as unknown as Record<BoneName, [number, number, number]>,
   hipsY: 0,
   jump: 0,
 });
@@ -51,16 +61,20 @@ const emptyPose = (): Pose => ({
 // Rotation conventions (model faces +Z): a limb hanging down (-Y) swings
 // forward with a NEGATIVE rotation.x; the spine leans forward with a
 // POSITIVE rotation.x; rotation.z spreads the arms/legs outward (sign per side).
+// Ankles/wrists: POSITIVE rotation.x points the toes down / flexes the hand
+// towards the front of the limb.
 
 /**
- * A procedurally rigged basketball player built from primitives.
- * All animation is generated analytically and blended, so no asset files are
+ * A procedurally modelled, skinned basketball player. The body, jersey and
+ * shorts are smooth skinned meshes driven by a 17-bone skeleton (hips, spine,
+ * chest, neck, head, shoulders, elbows, wrists, hips, knees, ankles). All
+ * animation is generated analytically and blended, so no asset files are
  * needed and every player on the floor can run a different cycle.
  */
 export class Character {
   readonly root = new THREE.Group();
-  readonly hips = new THREE.Group();
-  readonly bones: Record<BoneName, THREE.Group>;
+  readonly hips: THREE.Bone;
+  readonly bones: Record<SkeletonBone, THREE.Bone>;
   readonly rHand = new THREE.Object3D();
   readonly lHand = new THREE.Object3D();
   readonly def: PlayerDef;
@@ -73,7 +87,8 @@ export class Character {
   phase = 0;
   dribblePhase = 0;
   private current: Pose = emptyPose();
-  private jerseyTex: THREE.CanvasTexture | null = null;
+  private built: BuiltBody;
+  private disposed = false;
   readonly meshes: THREE.Mesh[] = [];
   highlight: THREE.Mesh;
   shadowBlob: THREE.Mesh;
@@ -83,132 +98,24 @@ export class Character {
     this.def = def;
     const h = def.height;
     this.h = h;
-    const seg = opts.lowDetail ? 4 : 8;
-    const skin = new THREE.MeshStandardMaterial({ color: SKIN_TONES[def.skin % SKIN_TONES.length], roughness: 0.75 });
-    const hairMat = new THREE.MeshStandardMaterial({ color: HAIR[def.hair % HAIR.length], roughness: 0.9 });
-    const jerseyMat = this.makeJerseyMaterial(kit, def);
-    const shortsMat = new THREE.MeshStandardMaterial({ color: kit.shorts, roughness: 0.8 });
-    const trimMat = new THREE.MeshStandardMaterial({ color: kit.trim, roughness: 0.8 });
-    const shoeMat = new THREE.MeshStandardMaterial({ color: kit.trim, roughness: 0.5 });
-    const sockMat = new THREE.MeshStandardMaterial({ color: '#f4f4f4', roughness: 0.9 });
-
-    const legUpper = 0.25 * h;
-    const legLower = 0.24 * h;
-    const footH = 0.045 * h;
-    this.standHipY = legUpper + legLower + footH;
-    const torsoLen = 0.3 * h;
-    const shoulderW = 0.235 * h;
-    const hipW = 0.165 * h;
-    const armUpper = 0.17 * h;
-    const armLower = 0.16 * h;
-
-    this.hips.position.y = this.standHipY;
+    this.standHipY = J.hips * h;
+    this.built = buildBody(def, kit, teamById(kit.teamId), !!opts.lowDetail);
+    this.bones = this.built.bones;
+    this.hips = this.bones.hips;
     this.root.add(this.hips);
-    const mk = (name: BoneName, parent: THREE.Object3D, x: number, y: number, z: number) => {
-      const g = new THREE.Group();
-      g.name = name;
-      g.position.set(x, y, z);
-      parent.add(g);
-      return g;
-    };
-    const spine = mk('spine', this.hips, 0, 0.02 * h, 0);
-    // Pelvis / shorts.
-    const pelvis = new THREE.Mesh(new THREE.BoxGeometry(hipW + 0.06 * h, 0.14 * h, 0.12 * h), shortsMat);
-    pelvis.position.y = -0.03 * h;
-    this.hips.add(pelvis);
-    this.meshes.push(pelvis);
-    // Torso (slightly tapered).
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(shoulderW, torsoLen, 0.13 * h, 1, 1, 1), jerseyMat);
-    torso.position.y = torsoLen / 2;
-    spine.add(torso);
-    this.meshes.push(torso);
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.03 * h, 0.035 * h, 0.05 * h, seg), skin);
-    neck.position.y = torsoLen + 0.02 * h;
-    spine.add(neck);
-    const head = mk('head', spine, 0, torsoLen + 0.045 * h, 0);
-    const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.065 * h, seg * 2, seg * 2), skin);
-    headMesh.position.y = 0.06 * h;
-    headMesh.scale.set(0.92, 1.08, 0.95);
-    head.add(headMesh);
-    this.meshes.push(headMesh);
-    if (def.hair !== 3) {
-      const hair = new THREE.Mesh(new THREE.SphereGeometry(0.068 * h, seg * 2, seg, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
-      hair.position.y = 0.065 * h;
-      hair.scale.set(0.93, 1.05, 0.96);
-      head.add(hair);
-      this.meshes.push(hair);
+    for (const m of this.built.meshes) {
+      this.root.add(m);
+      this.meshes.push(m);
     }
-    // Headband in team trim for variety.
-    if (def.hair === 2) {
-      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.064 * h, 0.064 * h, 0.02 * h, seg * 2, 1, true), trimMat);
-      band.position.y = 0.085 * h;
-      head.add(band);
-    }
-    // Arms.
-    const armGeoU = new THREE.CapsuleGeometry(0.035 * h, armUpper - 0.07 * h, 2, seg);
-    const armGeoL = new THREE.CapsuleGeometry(0.03 * h, armLower - 0.06 * h, 2, seg);
-    const mkArm = (side: 1 | -1) => {
-      const shoulder = mk(side > 0 ? 'rShoulder' : 'lShoulder', spine, side * (shoulderW / 2 + 0.02 * h), torsoLen - 0.03 * h, 0);
-      const sleeve = new THREE.Mesh(new THREE.SphereGeometry(0.045 * h, seg, seg), jerseyMat);
-      shoulder.add(sleeve);
-      const upper = new THREE.Mesh(armGeoU, skin);
-      upper.position.y = -armUpper / 2;
-      shoulder.add(upper);
-      const elbow = mk(side > 0 ? 'rElbow' : 'lElbow', shoulder, 0, -armUpper, 0);
-      const lower = new THREE.Mesh(armGeoL, skin);
-      lower.position.y = -armLower / 2;
-      elbow.add(lower);
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.034 * h, seg, seg), skin);
-      hand.position.y = -armLower;
-      elbow.add(hand);
-      const handAnchor = side > 0 ? this.rHand : this.lHand;
-      handAnchor.position.set(0, -armLower - 0.05 * h, 0.04 * h);
-      elbow.add(handAnchor);
-      this.meshes.push(sleeve, upper, lower, hand);
-      return { shoulder, elbow };
-    };
-    const rArm = mkArm(1);
-    const lArm = mkArm(-1);
-    // Legs.
-    const legGeoU = new THREE.CapsuleGeometry(0.055 * h, legUpper - 0.1 * h, 2, seg);
-    const legGeoL = new THREE.CapsuleGeometry(0.042 * h, legLower - 0.08 * h, 2, seg);
-    const mkLeg = (side: 1 | -1) => {
-      const hip = mk(side > 0 ? 'rHip' : 'lHip', this.hips, side * hipW * 0.45, -0.04 * h, 0);
-      const upper = new THREE.Mesh(legGeoU, shortsMat);
-      upper.position.y = -legUpper / 2 + 0.02 * h;
-      hip.add(upper);
-      const knee = mk(side > 0 ? 'rKnee' : 'lKnee', hip, 0, -legUpper, 0);
-      const lower = new THREE.Mesh(legGeoL, skin);
-      lower.position.y = -legLower / 2;
-      knee.add(lower);
-      const sock = new THREE.Mesh(new THREE.CylinderGeometry(0.044 * h, 0.046 * h, 0.08 * h, seg), sockMat);
-      sock.position.y = -legLower + 0.05 * h;
-      knee.add(sock);
-      const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.075 * h, footH, 0.14 * h), shoeMat);
-      shoe.position.set(0, -legLower - footH / 2 + 0.01 * h, 0.025 * h);
-      knee.add(shoe);
-      this.meshes.push(upper, lower, sock, shoe);
-      return { hip, knee };
-    };
-    const rLeg = mkLeg(1);
-    const lLeg = mkLeg(-1);
-
-    this.bones = {
-      spine,
-      head,
-      lShoulder: lArm.shoulder,
-      lElbow: lArm.elbow,
-      rShoulder: rArm.shoulder,
-      rElbow: rArm.elbow,
-      lHip: lLeg.hip,
-      lKnee: lLeg.knee,
-      rHip: rLeg.hip,
-      rKnee: rLeg.knee,
-    };
-    for (const m of this.meshes) {
-      m.castShadow = true;
-      m.receiveShadow = false;
-    }
+    // Ball anchors sit in the palms and follow the wrists.
+    this.rHand.position.set(0, -0.05 * h, 0.04 * h);
+    this.lHand.position.set(0, -0.05 * h, 0.04 * h);
+    this.bones.rWrist.add(this.rHand);
+    this.bones.lWrist.add(this.lHand);
+    // Kit lettering uses the web font; repaint once it has loaded.
+    kitFontPromise()?.then(() => {
+      if (!this.disposed) this.built.repaint();
+    });
     // Selection ring under the controlled player.
     this.highlight = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.0, side: THREE.DoubleSide, depthWrite: false }));
     this.highlight.rotation.x = -Math.PI / 2;
@@ -219,51 +126,6 @@ export class Character {
     this.shadowBlob.position.y = 0.008;
     this.root.add(this.shadowBlob);
     this.applyPose(this.current);
-  }
-
-  private makeJerseyMaterial(kit: Kit, def: PlayerDef): THREE.Material[] {
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 512;
-    const ctx = c.getContext('2d')!;
-    // Atlas: left half = front, right half = back.
-    ctx.fillStyle = kit.jersey;
-    ctx.fillRect(0, 0, 512, 512);
-    ctx.fillStyle = kit.trim;
-    ctx.fillRect(0, 0, 512, 26);
-    ctx.fillRect(0, 486, 512, 26);
-    ctx.fillRect(0, 0, 12, 512);
-    ctx.fillRect(244, 0, 24, 512);
-    ctx.fillRect(500, 0, 12, 512);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = kit.number;
-    ctx.strokeStyle = kit.trim;
-    ctx.lineWidth = 6;
-    ctx.font = '900 150px "Segoe UI", Roboto, Arial, sans-serif';
-    ctx.strokeText(String(def.number), 128, 330);
-    ctx.fillText(String(def.number), 128, 330);
-    ctx.font = '700 44px "Segoe UI", Roboto, Arial, sans-serif';
-    ctx.fillText(def.last.toUpperCase().slice(0, 10), 384, 120);
-    ctx.font = '900 190px "Segoe UI", Roboto, Arial, sans-serif';
-    ctx.strokeText(String(def.number), 384, 360);
-    ctx.fillText(String(def.number), 384, 360);
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    this.jerseyTex = tex;
-    const front = tex.clone();
-    front.repeat.set(0.5, 1);
-    front.offset.set(0, 0);
-    front.needsUpdate = true;
-    const back = tex.clone();
-    back.repeat.set(0.5, 1);
-    back.offset.set(0.5, 0);
-    back.needsUpdate = true;
-    const side = new THREE.MeshStandardMaterial({ color: kit.jersey, roughness: 0.85 });
-    const frontMat = new THREE.MeshStandardMaterial({ map: front, roughness: 0.85 });
-    const backMat = new THREE.MeshStandardMaterial({ map: back, roughness: 0.85 });
-    const trim = new THREE.MeshStandardMaterial({ color: kit.trim, roughness: 0.85 });
-    // Box faces: +x, -x, +y, -y, +z (front), -z (back)
-    return [side, side, trim, side, frontMat, backMat];
   }
 
   setState(s: AnimState) {
@@ -303,9 +165,26 @@ export class Character {
   }
 
   private applyPose(p: Pose) {
-    for (const b of BONES) {
-      const r = p.bones[b];
-      this.bones[b].rotation.set(r[0], r[1], r[2]);
+    const b = p.bones;
+    const B = this.bones;
+    const set = (bone: THREE.Bone, a: number[], ka: number, c?: number[], kc = 1) => {
+      bone.rotation.set(a[0] * ka + (c ? c[0] * kc : 0), a[1] * ka + (c ? c[1] * kc : 0), a[2] * ka + (c ? c[2] * kc : 0));
+    };
+    // Spread the authored torso bend over spine + chest, and the head turn over neck + head.
+    set(B.spine, b.spine, 0.55);
+    set(B.chest, b.spine, 0.45, b.chest);
+    set(B.neck, b.head, 0.4, b.neck);
+    set(B.head, b.head, 0.6);
+    for (const k of ['lShoulder', 'lElbow', 'lWrist', 'rShoulder', 'rElbow', 'rWrist', 'lHip', 'lKnee', 'rHip', 'rKnee'] as const) set(B[k], b[k], 1);
+    // Ankles keep the sole flat while grounded and point the toes in the air.
+    const air = Math.min(1, Math.max(0, (p.jump - 0.03) / 0.15));
+    for (const side of ['l', 'r'] as const) {
+      const hip = b[`${side}Hip`];
+      const knee = b[`${side}Knee`];
+      const extra = b[`${side}Ankle`];
+      const flat = -(hip[0] + knee[0]);
+      const pitch = flat * (1 - air) + 0.55 * air + extra[0];
+      B[`${side}Ankle`].rotation.set(Math.min(0.95, Math.max(-0.75, pitch)), extra[1], -hip[2] * (1 - air) + extra[2]);
     }
     this.hips.position.y = this.standHipY + p.hipsY + p.jump;
     this.shadowBlob.scale.setScalar(1 - Math.min(0.6, p.jump * 0.6));
@@ -328,6 +207,8 @@ export class Character {
     const RE = hand > 0 ? 'rElbow' : 'lElbow';
     const L = hand > 0 ? 'lShoulder' : 'rShoulder';
     const LE = hand > 0 ? 'lElbow' : 'rElbow';
+    const RW = hand > 0 ? 'rWrist' : 'lWrist';
+    const LW = hand > 0 ? 'lWrist' : 'rWrist';
     const breathe = Math.sin(t * 2.2) * 0.02;
 
     const locomotion = (amp: number) => {
@@ -338,6 +219,12 @@ export class Character {
       b.lKnee = [(0.25 + 0.9 * Math.max(0, -c)) * amp + 0.08, 0, 0];
       b.rKnee = [(0.25 + 0.9 * Math.max(0, c)) * amp + 0.08, 0, 0];
       b.spine = [0.08 + 0.22 * amp, Math.sin(ph) * 0.06 * amp, 0];
+      // Shoulders counter-rotate against the hips; the head stays steady.
+      b.chest = [0, -s * 0.14 * amp, 0];
+      b.neck = [0, s * 0.08 * amp, 0];
+      // Push off through the toes at the back of each stride.
+      b.lAnkle = [0.35 * Math.max(0, s) * amp, 0, 0];
+      b.rAnkle = [0.35 * Math.max(0, -s) * amp, 0, 0];
       p.hipsY = -0.02 - Math.abs(Math.sin(ph)) * 0.035 * amp - 0.05 * amp;
     };
     const idleArms = () => {
@@ -345,6 +232,8 @@ export class Character {
       b.rShoulder = [0.05, 0, -0.14];
       b.lElbow = [-0.25, 0, 0];
       b.rElbow = [-0.25, 0, 0];
+      b.lWrist = [0.12, 0, 0];
+      b.rWrist = [0.12, 0, 0];
     };
     const runArms = (amp: number) => {
       const s = Math.sin(ph);
@@ -352,6 +241,8 @@ export class Character {
       b.rShoulder = [-0.55 * s * amp - 0.3 * amp, 0, -0.18];
       b.lElbow = [-1.0 - 0.3 * amp, 0, 0];
       b.rElbow = [-1.0 - 0.3 * amp, 0, 0];
+      b.lWrist = [0.2 + 0.15 * s * amp, 0, 0];
+      b.rWrist = [0.2 - 0.15 * s * amp, 0, 0];
     };
 
     switch (this.state) {
@@ -378,6 +269,8 @@ export class Character {
         b[RE] = [-1.35, 0, 0];
         b[L] = [-0.4, 0, hand * 0.5];
         b[LE] = [-1.5, 0, 0];
+        b[RW] = [-0.35, 0, 0];
+        b[LW] = [-0.25, 0, 0];
         b.lHip = [-0.3, 0, -0.18];
         b.rHip = [-0.3, 0, 0.18];
         b.lKnee = [0.55, 0, 0];
@@ -400,8 +293,11 @@ export class Character {
         const pump = Math.sin(this.dribblePhase) * 0.5 + 0.5;
         b[R] = [-0.35 - pump * 0.25, 0, -hand * 0.3];
         b[RE] = [-0.55 - pump * 0.55, 0, 0];
+        b[RW] = [-0.45 + pump * 0.75, 0, 0];
         b[L] = [-0.6 - 0.15 * amp, 0, hand * 0.55];
         b[LE] = [-1.35, 0, 0];
+        b[LW] = [-0.2, 0, 0];
+        b.chest = [0.05, -hand * 0.12, 0];
         p.hipsY -= 0.04;
         break;
       }
@@ -417,6 +313,8 @@ export class Character {
         b.rShoulder = [-0.35, 0, -1.25 + sway];
         b.lElbow = [-0.65, 0, 0];
         b.rElbow = [-0.65, 0, 0];
+        b.lWrist = [-0.35, 0, 0];
+        b.rWrist = [-0.35, 0, 0];
         p.hipsY = -0.2;
         if (m > 0.1) {
           // shuffle: smaller leg swing while staying low
@@ -448,6 +346,9 @@ export class Character {
         const shoulderX = -0.9 - 2.1 * rise;
         b[R] = [shoulderX, 0, -hand * (0.15 - 0.1 * rise)];
         b[RE] = [-1.75 * (1 - rise) - 0.1 - 0.25 * follow, 0, 0];
+        // Wrist cocks back under the ball, then snaps through on release.
+        b[RW] = [-0.55 * load - 0.6 * rise * (1 - follow) + 1.25 * follow, 0, 0];
+        b[LW] = [-0.3 * (1 - follow), 0, 0];
         // Guide hand.
         b[L] = [-1.0 - 1.5 * rise + 0.9 * follow, 0, hand * (0.5 - 0.25 * rise)];
         b[LE] = [-1.6 * (1 - rise) - 0.2, 0, 0];
@@ -461,6 +362,7 @@ export class Character {
         const reach = smooth(clamp01((u - 0.1) / 0.3));
         b[R] = [-0.6 - 2.5 * reach, 0, -hand * 0.1];
         b[RE] = [-1.4 * (1 - reach) - 0.05, 0, 0];
+        b[RW] = [-0.5 * reach + 0.6 * smooth(clamp01((u - 0.45) / 0.2)), 0, 0];
         b[L] = [-0.6 - 0.9 * reach, 0, hand * 0.4];
         b[LE] = [-1.4, 0, 0];
         b.rHip = [-1.2 * reach - 0.1, 0, 0.1];
@@ -483,6 +385,8 @@ export class Character {
         b[RE] = [-1.2 * (1 - reach) - 0.1 - 0.5 * slam, 0, 0];
         b[L] = [armX + 0.3, 0, hand * 0.3];
         b[LE] = [-1.2 * (1 - reach) - 0.1 - 0.5 * slam, 0, 0];
+        b[RW] = [-0.4 * reach + 1.0 * slam, 0, 0];
+        b[LW] = [-0.3 * reach + 0.8 * slam, 0, 0];
         b.rHip = [-1.1 * reach, 0, 0.12];
         b.rKnee = [1.5 * reach + 0.2, 0, 0];
         b.lHip = [-0.6 * reach, 0, -0.12];
@@ -499,6 +403,8 @@ export class Character {
         b.rShoulder = [-0.5 - 1.1 * push, 0, -0.35 + 0.25 * push];
         b.lElbow = [-1.5 * (1 - push) - 0.05, 0, 0];
         b.rElbow = [-1.5 * (1 - push) - 0.05, 0, 0];
+        b.lWrist = [-0.4 + 0.9 * push, 0, 0];
+        b.rWrist = [-0.4 + 0.9 * push, 0, 0];
         b.spine = [0.2 + 0.15 * push, 0, 0];
         b.lHip = [-0.25, 0, -0.14];
         b.rHip = [-0.25, 0, 0.14];
@@ -530,6 +436,8 @@ export class Character {
         const reach = Math.sin(u * Math.PI);
         b[R] = [-1.6 * reach - 0.2, 0, -hand * 0.3];
         b[RE] = [-0.2, 0, 0];
+        b[RW] = [0.5 * reach, 0, 0];
+        b.chest = [0, hand * 0.2 * reach, 0];
         b[L] = [-0.3, 0, hand * 0.9];
         b[LE] = [-0.6, 0, 0];
         b.spine = [0.4 + 0.3 * reach, 0, hand * 0.15 * reach];
@@ -556,6 +464,8 @@ export class Character {
       case 'dejected': {
         b.spine = [0.45, 0, 0];
         b.head = [0.5, 0, 0];
+        b.lWrist = [0.3, 0, 0];
+        b.rWrist = [0.3, 0, 0];
         b.lShoulder = [0.2, 0, 0.1];
         b.rShoulder = [0.2, 0, -0.1];
         b.lElbow = [-0.2, 0, 0];
@@ -574,6 +484,8 @@ export class Character {
         b.rShoulder = [-1.4 * reach - 0.4, 0, -0.3];
         b.lElbow = [-0.6 - 0.8 * u, 0, 0];
         b.rElbow = [-0.6 - 0.8 * u, 0, 0];
+        b.lWrist = [-0.5 * reach, 0, 0];
+        b.rWrist = [-0.5 * reach, 0, 0];
         b.spine = [0.15, 0, 0];
         if (m > 0.05) locomotion(m);
         break;
@@ -588,10 +500,15 @@ export class Character {
   }
 
   dispose() {
-    this.jerseyTex?.dispose();
-    for (const m of this.meshes) {
-      m.geometry.dispose();
-    }
+    this.disposed = true;
+    for (const m of this.built.meshes) m.geometry.dispose();
+    for (const m of this.built.materials) m.dispose();
+    for (const t of this.built.textures) t.dispose();
+    this.built.skeleton.dispose();
+    this.highlight.geometry.dispose();
+    (this.highlight.material as THREE.Material).dispose();
+    this.shadowBlob.geometry.dispose();
+    (this.shadowBlob.material as THREE.Material).dispose();
   }
 }
 
