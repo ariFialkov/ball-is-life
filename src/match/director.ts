@@ -86,7 +86,7 @@ export class Director {
     const need: 1 | -1 = this.script.userWins ? 1 : -1;
     let force = 0;
     let forceDir: 1 | -1 | 0 = 0;
-    const late = t01 >= 0.72;
+    const late = t01 >= 0.749; // fourth quarter or overtime
     if (late) {
       const cushion = margin * need; // positive when the scripted winner leads
       const secs = Math.max(0, remaining);

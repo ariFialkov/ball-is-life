@@ -148,6 +148,8 @@ function playCareerGame(app: App, save: CareerSave, team: TeamDef, opp: TeamDef,
   const outcome = ticket.outcome;
   const g = outcome.games[index];
   const player = makeCareerPlayer(save.playerName, save.pos);
+  // Ticket stat targets are authored for a 12-minute game; scale to the configured length.
+  const lengthScale = (store.data.settings.quarterLength * 4) / 720;
   app.show(
     gameScreen(app, {
       matchOptions: {
@@ -156,7 +158,7 @@ function playCareerGame(app: App, save: CareerSave, team: TeamDef, opp: TeamDef,
         quarterLength: store.data.settings.quarterLength,
         homeIndex: index % 2 === 0 ? 0 : 1,
         seed: `career:${ticket.id}:${index}`,
-        career: { player, targetPoints: g.targetPoints, targetAssists: g.targetAssists, targetRebounds: g.targetRebounds, minutesShare: g.minutesShare },
+        career: { player, targetPoints: Math.round(g.targetPoints * lengthScale), targetAssists: Math.round(g.targetAssists * lengthScale), targetRebounds: Math.round(g.targetRebounds * lengthScale), minutesShare: g.minutesShare },
       },
       strip: `CAREER GAME ${index + 1} · ${team.abbr} vs ${opp.abbr} · ${Math.round(g.minutesShare * 100)}% MINUTES`,
       onFinish: (r) => {
