@@ -203,6 +203,7 @@ export class Match {
   private userMoveMag = 0;
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
+  private readonly tmpC = new THREE.Vector3();
   private shotMeter: { active: boolean; t: number } = { active: false, t: 0 };
   readonly tmp = new THREE.Vector3();
   readonly tmp2 = new THREE.Vector3();
@@ -669,13 +670,26 @@ export class Match {
     const dx = dirD * RIM_X - man.pos.x;
     const dz = -man.pos.z;
     const len = Math.hypot(dx, dz) || 1;
-    const onBall = this.holder === man;
+    // During a throw-in the player being inbounded to counts as the ball.
+    const ib = this.phase !== 'live' ? this.inbound : null;
+    const onBall = ib ? man === ib.receiver : this.holder === man;
     const off = offOverride ?? (onBall ? 1.1 : clamp(1.0 + hdist(man.pos, ballRef) * 0.25, 1.0, 3.2));
     out.set(man.pos.x + (dx / len) * off, 0, man.pos.z + (dz / len) * off);
-    const minP = onBall ? -1.0 : 3.0;
-    if (dirD * out.x < minP) {
-      out.x = dirD * minP;
-      out.z = lerp(out.z, man.pos.z * 0.55, 0.6);
+    if (onBall) {
+      // Pick the ball up around half court.
+      if (dirD * out.x < -1.0) {
+        out.x = -dirD;
+        out.z = lerp(out.z, man.pos.z * 0.55, 0.6);
+      }
+    } else if (dirD * out.x < 3.0) {
+      // Transition: get back to where this man will set up, goal-side of that spot,
+      // shading toward him; the defense forms a staggered shell instead of a line.
+      const spot = this.spotWorld(man.team, man.slot % 5, this.tmpC);
+      const sdx = dirD * RIM_X - spot.x;
+      const sdz = -spot.z;
+      const sl = Math.hypot(sdx, sdz) || 1;
+      out.set(spot.x + (sdx / sl) * 1.5, 0, spot.z + (sdz / sl) * 1.5);
+      out.z = lerp(out.z, man.pos.z, 0.25);
     }
     out.x = clamp(out.x, -HALF_L + 0.4, HALF_L - 0.4);
     out.z = clamp(out.z, -HALF_W + 0.4, HALF_W - 0.4);
