@@ -48,14 +48,32 @@ The engine uses only erasable TypeScript syntax, so the same file runs in Node w
 
 | | Keyboard | PlayStation | Xbox | Touch |
 | --- | --- | --- | --- | --- |
-| Move | WASD / arrows | Left stick | Left stick | Left stick |
-| Sprint | Shift | R2 | RT | SPRINT |
-| Shoot (hold, release in the green) / Block on D | Space / J | Square | X | SHOOT |
-| Pass / Switch on D | E / K | Cross | A | PASS |
-| Crossover / Steal on D | Q / L | Circle or right-stick flick | B or right-stick flick | MOVE |
+| Move | WASD | Left stick | Left stick | Left stick |
+| Sprint | Shift | R2 | RT | SPRINT (hold) |
+| Shoot (hold, release in the green) / Steal on D | Space / J | Square | X | SHOOT / STEAL |
+| Pass / Switch on D / Call for the ball off it | E / K | Cross | A | PASS / SWITCH / CALL |
+| Bounce pass | Q / L | Circle | B | |
+| Lob pass / Block on D | R / I | Triangle | Y | LOB / BLOCK |
+| Dribble moves (skill stick) | Arrow keys | Right stick | Right stick | Swipe on the right side |
 | Pause | Esc / P | Options | Menu | II |
+| Menus | Arrows, Enter, Esc | D-pad or left stick, Cross, Circle | D-pad or left stick, A, B | Tap |
+
+Dribble moves are read relative to the way the ball handler faces:
+
+| Skill stick | Move |
+| --- | --- |
+| Forward | Hesitation (stop, then explode) |
+| Sideways, away from the ball | Crossover |
+| Sideways, toward the ball | Spin |
+| Back-diagonal, away from the ball | Between the legs |
+| Back-diagonal, toward the ball | Behind the back |
+| Straight back | Step-back |
+
+The ball really changes hands: crossovers bounce in front, between-the-legs under the body and behind-the-back behind it, and the handler also switches hands on their own when driving to the other side. Chained moves are more likely to freeze a defender; a defender reaching from the ball side gets more steals than one reaching across the body.
 
 Near the rim, Shoot triggers a layup or dunk automatically. On offense the controlled player follows the ball; on defense it auto-switches to the man guarding the ball and can be switched manually.
+
+**Boundaries and inbounds.** A soft wall along the lines holds the ball handler in bounds; only sprinting straight at the line for about a third of a second breaks through, and stepping on or over the line with the ball is a turnover. Every dead ball is restarted with a real throw-in from out of bounds. After a made basket the player nearest the ball inbounds from the baseline to the point guard (automatic, like 2K). After a violation, the ball going out, and at the start of each period, the small forward inbounds; on your own team's throw-ins you pick the pass yourself (Cross for a chest pass, Circle bounce, Triangle lob; aim with the stick). The clocks stay stopped until the throw-in is touched.
 
 ## Tech
 

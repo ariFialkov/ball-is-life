@@ -56,7 +56,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
     if (paused || finished) return;
     paused = true;
     match.paused = true;
-    const resume = h('button', { class: 'btn primary' }, 'RESUME');
+    const resume = h('button', { class: 'btn primary', 'data-nav-back': '', 'data-nav-default': '' }, 'RESUME');
     resume.onclick = () => closeDialog();
     const cam = h('button', { class: 'btn' }, `CAMERA: ${app.camera.mode.toUpperCase()}`);
     cam.onclick = () => {
@@ -120,6 +120,17 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
         return;
       }
       if (paused) return;
+      // Context-sensitive touch buttons (2K layout: shoot/steal, pass/switch, lob/block, sprint).
+      if (showTouch) {
+        const ib = match.inbound;
+        const inbounding = !!ib && match.phase !== 'live' && ib.manual && match.controlled === ib.inbounder;
+        const withBall = match.phase === 'live' && !!match.holder && match.holder === match.controlled;
+        if (inbounding) app.touch.setLabels({ a: '', b: 'INBOUND', x: 'SPRINT', y: 'LOB' });
+        else if (withBall) app.touch.setLabels({ a: 'SHOOT', b: 'PASS', x: 'SPRINT', y: 'LOB' });
+        else if (match.possession === 0) app.touch.setLabels({ a: '', b: 'CALL', x: 'SPRINT', y: '' });
+        else app.touch.setLabels({ a: 'STEAL', b: 'SWITCH', x: 'SPRINT', y: 'BLOCK' });
+        app.touch.setSwipe(withBall);
+      }
       for (let i = 0; i < app.timeScale; i++) match.update(Math.min(dt, 1 / 30));
       const events = match.takeEvents();
       hud.update(dt, match, events);

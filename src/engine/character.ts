@@ -93,6 +93,20 @@ export class Character {
   highlight: THREE.Mesh;
   shadowBlob: THREE.Mesh;
   handedness: 1 | -1 = 1;
+  /**
+   * Dribble hand switch: while non-null the dribble arms blend from the pose
+   * for hand `switchFrom` to the mirrored pose for the other hand by `switchMix` (0..1).
+   */
+  switchFrom: 1 | -1 | null = null;
+  switchMix = 0;
+  /** Additive body shaping for dribble moves. `lean` > 0 tilts the torso toward the +1 (r-bone) side. */
+  lean = 0;
+  /** Chest twist (radians about the vertical axis). */
+  twist = 0;
+  /** Extra hip drop in metres (negative = lower). */
+  crouch = 0;
+  /** -1 runs the stride cycle backwards, for backpedalling. */
+  strideDir: 1 | -1 = 1;
 
   constructor(def: PlayerDef, kit: Kit, opts: { lowDetail?: boolean } = {}) {
     this.def = def;
@@ -145,9 +159,23 @@ export class Character {
     this.stateTime += dt;
     this.moveBlend += (moveSpeed01 - this.moveBlend) * Math.min(1, dt * 10);
     const stride = 0.5 + this.moveBlend * 1.0;
-    this.phase += dt * (6.5 + this.moveBlend * 6) * (this.moveBlend > 0.03 ? 1 : 0);
+    this.phase += dt * (6.5 + this.moveBlend * 6) * (this.moveBlend > 0.03 ? 1 : 0) * this.strideDir;
     this.dribblePhase += dt * 10.5;
-    const target = this.generatePose();
+    let target: Pose;
+    if (this.switchFrom !== null && this.state === 'dribble') {
+      // Hand switch: blend the dribble pose for the old hand into the mirrored one.
+      const saved = this.handedness;
+      this.handedness = this.switchFrom;
+      const from = this.generatePose();
+      this.handedness = (this.switchFrom === 1 ? -1 : 1) as 1 | -1;
+      const to = this.generatePose();
+      this.handedness = saved;
+      target = blendPose(from, to, smooth(clamp01(this.switchMix)));
+    } else target = this.generatePose();
+    // Positive spine z tips the torso toward local -X, the -1 hand side.
+    target.bones.spine[2] -= this.lean;
+    target.bones.chest[1] += this.twist;
+    target.hipsY += this.crouch;
     // Quick blend for transitions, snappier when entering explosive actions.
     const rate = this.state === 'shoot' || this.state === 'dunk' || this.state === 'layup' || this.state === 'pass' || this.state === 'block' ? 20 : 12;
     const k = Math.min(1, dt * rate);
@@ -513,4 +541,16 @@ export class Character {
 }
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+function blendPose(a: Pose, b: Pose, t: number): Pose {
+  const out = emptyPose();
+  for (const k of BONES) {
+    const x = a.bones[k];
+    const y = b.bones[k];
+    out.bones[k] = [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
+  }
+  out.hipsY = a.hipsY + (b.hipsY - a.hipsY) * t;
+  out.jump = a.jump + (b.jump - a.jump) * t;
+  return out;
+}
 const smooth = (v: number) => v * v * (3 - 2 * v);

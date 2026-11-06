@@ -9,6 +9,7 @@ import { Character } from '../engine/character.ts';
 import { store } from './store.ts';
 import { audio } from '../engine/audio.ts';
 import { Rng } from '../core/rng.ts';
+import { MenuNav } from '../ui/nav.ts';
 
 export interface Screen {
   el: HTMLElement;
@@ -80,6 +81,7 @@ export class App {
   readonly ui: HTMLElement;
   readonly overlay: HTMLElement;
   readonly reelOverlay: HTMLElement;
+  readonly nav: MenuNav;
   current: Screen | null = null;
   private reel: Match | null = null;
   private showcase: Showcase;
@@ -98,6 +100,7 @@ export class App {
     this.reelOverlay = document.getElementById('reel-overlay')!;
     this.touch = new TouchControls(this.input, this.overlay);
     this.touch.setVisible(false);
+    this.nav = new MenuNav(this.input);
     this.showcase = new Showcase(this.renderer.scene, this.renderer.mobile);
     audio.setEnabled(store.data.settings.sound);
     const unlock = () => audio.unlock();
@@ -179,6 +182,7 @@ export class App {
 
   private frame(dt: number, t: number) {
     this.input.poll(dt);
+    this.nav.update();
     if (this.mode === 'reel' && this.reel) {
       this.reel.update(dt);
       this.reel.takeEvents();

@@ -44,12 +44,13 @@ export function settingsScreen(app: App): Screen {
     h(
       'div',
       { class: 'controls-help' },
-      h('div', {}, h('h4', {}, 'Keyboard'), dl([['WASD / Arrows', 'Move'], ['Shift', 'Sprint'], ['Space / J', 'Shoot (hold, release at the green) · Block'], ['E / K', 'Pass · Switch defender'], ['Q / L', 'Crossover · Steal'], ['Esc / P', 'Pause']])),
-      h('div', {}, h('h4', {}, 'PlayStation'), dl([['Left stick', 'Move'], ['R2', 'Sprint'], ['Square', 'Shoot · Block'], ['Cross', 'Pass · Switch'], ['Circle', 'Dribble move · Steal'], ['Right stick', 'Pro-stick flick: crossover'], ['Options', 'Pause']])),
-      h('div', {}, h('h4', {}, 'Xbox'), dl([['Left stick', 'Move'], ['RT', 'Sprint'], ['X', 'Shoot · Block'], ['A', 'Pass · Switch'], ['B', 'Dribble move · Steal'], ['Right stick', 'Flick: crossover'], ['Menu', 'Pause']])),
-      h('div', {}, h('h4', {}, 'Touch'), dl([['Left stick', 'Move'], ['SHOOT', 'Hold & release · Block on D'], ['PASS', 'Pass · Switch on D'], ['SPRINT', 'Sprint'], ['MOVE', 'Crossover · Steal on D']])),
+      h('div', {}, h('h4', {}, 'Keyboard'), dl([['WASD', 'Move'], ['Shift', 'Sprint'], ['Space / J', 'Shoot (hold, release in the green) · Steal'], ['E / K', 'Pass · Switch · Call for the ball'], ['Q / L', 'Bounce pass'], ['R / I', 'Lob pass · Block'], ['Arrow keys', 'Dribble moves (skill stick)'], ['Esc / P', 'Pause'], ['Arrows + Enter / Esc', 'Menus']])),
+      h('div', {}, h('h4', {}, 'PlayStation'), dl([['Left stick', 'Move'], ['R2', 'Sprint'], ['Square', 'Shoot · Steal'], ['Cross', 'Pass · Switch · Call for the ball'], ['Circle', 'Bounce pass'], ['Triangle', 'Lob pass · Block'], ['Right stick', 'Dribble moves'], ['Options', 'Pause'], ['D-pad + Cross / Circle', 'Menus']])),
+      h('div', {}, h('h4', {}, 'Xbox'), dl([['Left stick', 'Move'], ['RT', 'Sprint'], ['X', 'Shoot · Steal'], ['A', 'Pass · Switch · Call for the ball'], ['B', 'Bounce pass'], ['Y', 'Lob pass · Block'], ['Right stick', 'Dribble moves'], ['Menu', 'Pause'], ['D-pad + A / B', 'Menus']])),
+      h('div', {}, h('h4', {}, 'Touch'), dl([['Left stick', 'Move'], ['SHOOT / STEAL', 'Hold & release to shoot'], ['PASS / SWITCH', 'Pass · Switch · Call'], ['LOB / BLOCK', 'Lob pass · Block'], ['SPRINT', 'Hold to sprint'], ['Swipe right side', 'Dribble moves']])),
+      h('div', {}, h('h4', {}, 'Dribble moves'), dl([['Forward', 'Hesitation'], ['Away from the ball', 'Crossover'], ['Toward the ball', 'Spin'], ['Back-diagonal, away', 'Between the legs'], ['Back-diagonal, toward', 'Behind the back'], ['Straight back', 'Step-back']])),
     ),
-    h('div', { class: 'muted', style: 'font-size:12px;margin-top:8px' }, 'Shooting: hold to start the jumper and release when the meter reaches the green band. A green release is the best shot you can take; contests, movement and distance still matter. Near the rim, shoot triggers a layup or dunk automatically.'),
+    h('div', { class: 'muted', style: 'font-size:12px;margin-top:8px' }, 'Shooting: hold to start the jumper and release when the meter reaches the green band. A green release is the best shot you can take; contests, movement and distance still matter. Near the rim, shoot triggers a layup or dunk automatically. Dribble moves are read relative to the way your player faces; the ball switches hands on its own when you drive the other way, and chaining moves makes them harder to guard.'),
   );
 
   // Operator panel.

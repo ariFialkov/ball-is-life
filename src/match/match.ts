@@ -26,7 +26,10 @@ export interface Stats {
 
 const emptyStats = (): Stats => ({ pts: 0, ast: 0, reb: 0, stl: 0, blk: 0, fga: 0, fgm: 0, tpa: 0, tpm: 0, to: 0 });
 
-type ActionType = 'none' | 'shoot' | 'layup' | 'dunk' | 'pass' | 'block' | 'steal' | 'catch' | 'crossover';
+type ActionType = 'none' | 'shoot' | 'layup' | 'dunk' | 'pass' | 'block' | 'steal' | 'catch';
+export type PassStyle = 'chest' | 'bounce' | 'lob';
+export type MoveKind = 'cross' | 'legs' | 'behind' | 'spin' | 'hesi' | 'stepback';
+type Mods = ReturnType<Director['mods']>;
 
 interface Action {
   type: ActionType;
@@ -38,6 +41,48 @@ interface Action {
   quality: number;
   target?: Athlete;
   dir?: THREE.Vector3;
+  passStyle?: PassStyle;
+}
+
+/**
+ * A dribble move in progress. Hands use the rig convention: +1 is the side of
+ * the r-bones (the player's local +X), -1 the other side.
+ */
+interface DribbleMove {
+  kind: MoveKind;
+  t: number;
+  dur: number;
+  from: 1 | -1;
+  to: 1 | -1;
+  /** World-space direction of the move's burst. */
+  dir: THREE.Vector3;
+  /** Facing when the move started (held during the move). */
+  facing: number;
+  /** Spin moves: +1 / -1 full turn of the body. */
+  spin: number;
+  /** Automatic hand switch while driving: no burst, normal steering continues. */
+  auto: boolean;
+}
+
+export type InboundReason = 'score' | 'oob' | 'violation' | 'period' | 'sub';
+
+export interface InboundState {
+  team: 0 | 1;
+  /** Where the inbounder stands, just outside the line. */
+  spot: THREE.Vector3;
+  /** Unit vector pointing from the spot into the court. */
+  inward: THREE.Vector3;
+  reason: InboundReason;
+  inbounder: Athlete;
+  receiver: Athlete;
+  /** Seconds since the inbounder took the ball. */
+  t: number;
+  /** The user picks the throw-in (their team, not after a made basket). */
+  manual: boolean;
+  /** When the AI (or the timeout for a user) throws it in. */
+  passAt: number;
+  /** Phase offset for the receiver's V-cut. */
+  cut: number;
 }
 
 export interface Athlete {
@@ -48,6 +93,8 @@ export interface Athlete {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
   facing: number;
+  /** Smoothed body yaw (the facing the character actually shows). */
+  yaw: number;
   target: THREE.Vector3;
   action: Action;
   cooldown: number;
@@ -61,6 +108,17 @@ export interface Athlete {
   isUser: boolean;
   lastCatch: number;
   sprint: boolean;
+  /** Which hand the ball is in while dribbling (+1 = r-bone side). */
+  ballHand: 1 | -1;
+  move: DribbleMove | null;
+  handSwitchCd: number;
+  lastMoveEnd: number;
+  /** Seconds the user has been pushing straight out of bounds. */
+  oobPush: number;
+  /** The soft boundary wall has given way (the player forced their way out). */
+  breakout: boolean;
+  /** Reaction delay after a change of possession, so players do not all move in lockstep. */
+  reactAt: number;
 }
 
 export interface MatchEvent {
@@ -96,7 +154,7 @@ export interface MatchOptions {
   reel?: boolean;
 }
 
-export type Phase = 'live' | 'dead' | 'period' | 'end' | 'intro';
+export type Phase = 'live' | 'dead' | 'inbound' | 'period' | 'end' | 'intro';
 
 const SPOTS: [number, number][] = [
   [7.6, 0], // PG top
@@ -105,6 +163,14 @@ const SPOTS: [number, number][] = [
   [1.4, -5.8], // PF left corner
   [1.6, 2.4], // C low post
 ];
+
+/** Early-offense lanes (z, mirrored for the away team) and how far ahead of the ball each slot runs. */
+const TRANSITION_LANE = [0, 5.4, -5.4, -2.4, 1.6];
+const TRANSITION_LEAD = [1, 7.5, 6.5, -1.5, 4.5];
+/** Soft boundary: the wall starts resisting this far from the line and stops players this far inside it. */
+const BOUNDARY_BAND = 1.0;
+const EDGE = 0.12;
+const MOVE_DUR: Record<MoveKind, number> = { cross: 0.34, legs: 0.4, behind: 0.42, spin: 0.6, hesi: 0.5, stepback: 0.48 };
 
 export class Match {
   readonly opts: MatchOptions;
@@ -128,7 +194,15 @@ export class Match {
   time = 0;
   private lastPasser: Athlete | null = null;
   private lastPassTime = -10;
-  private pendingInbound: { team: 0 | 1; x: number; z: number; reason: string } | null = null;
+  /** The current throw-in, from the whistle until the inbound pass is touched. */
+  inbound: InboundState | null = null;
+  /** Game and shot clocks stay stopped until the ball is touched inbounds. */
+  clockHeld = true;
+  private callForBall: { who: Athlete; at: number } | null = null;
+  private userMoveDir = new THREE.Vector3();
+  private userMoveMag = 0;
+  private readonly tmpA = new THREE.Vector3();
+  private readonly tmpB = new THREE.Vector3();
   private shotMeter: { active: boolean; t: number } = { active: false, t: 0 };
   readonly tmp = new THREE.Vector3();
   readonly tmp2 = new THREE.Vector3();
@@ -183,7 +257,7 @@ export class Match {
     if (opts.career) this.planMoments();
     this.setupPeriodStart();
     this.phase = 'intro';
-    this.phaseTimer = opts.reel ? 0.2 : 2.6;
+    this.phaseTimer = opts.reel ? 0.2 : 1.2;
     this.events.push({ type: 'tip', team: 0, text: `${opts.teams[0].abbr} vs ${opts.teams[1].abbr}` });
   }
 
@@ -210,6 +284,14 @@ export class Match {
       isUser: false,
       lastCatch: 0,
       sprint: false,
+      yaw: 0,
+      ballHand: 1,
+      move: null,
+      handSwitchCd: 0,
+      lastMoveEnd: -10,
+      oobPush: 0,
+      breakout: false,
+      reactAt: 0,
     };
   }
 
@@ -292,46 +374,29 @@ export class Match {
     this.clock = this.period <= 4 ? this.opts.quarterLength : Math.min(60, this.opts.quarterLength);
     this.shotClock = 24;
     const team: 0 | 1 = this.period % 2 === 1 ? 0 : 1;
-    this.possession = team;
-    this.holder = null;
     this.ball.shot = null;
     this.ball.pass = null;
-    for (const a of this.athletes) {
-      if (!a.onCourt) continue;
-      this.homeSpot(a, true);
-      a.pos.copy(a.target);
-      a.vel.set(0, 0, 0);
-      a.action.type = 'none';
-      a.driving = false;
-      a.cutting = false;
-      a.char.root.position.copy(a.pos);
-    }
-    const pg = this.onCourt(team).find((a) => a.slot === 0) ?? this.onCourt(team)[0];
-    this.giveBall(pg);
-    this.pickControlled();
-    this.opts.camera.attackDir = this.attackDir(this.possession);
-    this.opts.camera.snap();
+    for (const a of this.athletes) this.resetAthlete(a);
+    // Every period starts with a throw-in from the offense's own baseline, already in formation.
+    this.prepareInbound(team, 0, this.rng.chance(0.5) ? 2 : -2, 'period', 0, true);
+    this.opts.camera.attackDir = this.attackDir(team);
+    this.opts.camera.prime(this.ball.pos);
   }
 
-  /** Default spots: offense at their set, defense matched up. */
-  private homeSpot(a: Athlete, start = false) {
-    if (a.team === this.possession) {
-      this.spotWorld(a.team, a.slot, a.target);
-      if (start) {
-        // Start possession in the backcourt so the offense walks it up.
-        a.target.x = -this.attackDir(a.team) * (HALF_L - 3 - a.slot * 1.2);
-        a.target.z = (a.slot - 2) * 2.4;
-      }
-    } else {
-      const man = this.matchup(a);
-      if (man) {
-        const bx = this.attackDir(man.team) * RIM_X;
-        const dx = bx - man.pos.x;
-        const dz = -man.pos.z;
-        const len = Math.hypot(dx, dz) || 1;
-        a.target.set(man.pos.x + (dx / len) * 1.6, 0, man.pos.z + (dz / len) * 1.6);
-      }
-    }
+  private resetAthlete(a: Athlete) {
+    a.action.type = 'none';
+    a.driving = false;
+    a.cutting = false;
+    a.move = null;
+    a.breakout = false;
+    a.oobPush = 0;
+    a.vel.set(0, 0, 0);
+  }
+
+  /** Live-play default target: offense at its set spot, defense goal-side of its man. */
+  private homeSpot(a: Athlete) {
+    if (a.team === this.possession) this.spotWorld(a.team, a.slot, a.target);
+    else this.defenseTarget(a, this.holder ? this.holder.pos : this.ball.pos, a.target);
   }
 
   matchup(a: Athlete): Athlete | null {
@@ -340,14 +405,22 @@ export class Match {
   }
 
   giveBall(a: Athlete) {
+    if (this.possession !== a.team) {
+      // Change of possession: everyone reacts with a small, individual delay.
+      for (const x of this.athletes) x.reactAt = this.time + this.rng.float(0.08, 0.4);
+    }
     this.holder = a;
     this.possession = a.team;
+    this.clockHeld = false;
+    this.inbound = null;
     this.ball.mode = 'dribble';
     this.ball.shot = null;
     this.ball.pass = null;
     this.ball.lastTouchTeam = a.team;
     a.lastCatch = this.time;
     a.driving = false;
+    a.move = null;
+    a.handSwitchCd = 0.4;
     a.decisionTimer = this.rng.float(0.3, 0.8);
     this.opts.camera.attackDir = this.attackDir(a.team);
     if (this.opts.userControlled && a.team === 0) {
@@ -366,13 +439,16 @@ export class Match {
       this.updateHighlights();
       return;
     }
-    if (this.possession === 0 && this.holder && this.holder.team === 0) this.controlled = this.holder;
+    const ib = this.inbound && this.phase !== 'live' ? this.inbound : null;
+    if (ib && ib.team === 0) this.controlled = ib.manual ? ib.inbounder : ib.receiver;
+    else if (!ib && this.possession === 0 && this.holder && this.holder.team === 0) this.controlled = this.holder;
     else {
-      // Defense: pick the teammate guarding the ball / closest to the ball.
+      // Defense: the teammate nearest the ball (or the player being inbounded to).
+      const ref = ib ? ib.receiver.pos : this.ball.pos;
       let best: Athlete | null = null;
       let bd = Infinity;
       for (const a of this.onCourt(0)) {
-        const d = hdist(a.pos, this.ball.pos);
+        const d = hdist(a.pos, ref);
         if (d < bd) {
           bd = d;
           best = a;
@@ -396,41 +472,220 @@ export class Match {
     this.updateHighlights();
   }
 
-  private startDead(seconds: number, inbound: { team: 0 | 1; x: number; z: number; reason: string }) {
+  /**
+   * Whistle: set up a throw-in. After a made basket (and at period starts) it is
+   * taken from the baseline under the basket the team defends by the player
+   * nearest the ball; after a violation or the ball going out it is taken from
+   * the nearest line by the small forward, to the point guard.
+   */
+  private prepareInbound(team: 0 | 1, x: number, z: number, reason: InboundReason, delay: number, instant = false) {
+    const dir = this.attackDir(team);
+    const spot = new THREE.Vector3();
+    const inward = new THREE.Vector3();
+    if (reason === 'score' || reason === 'period' || reason === 'sub') {
+      const side = Math.abs(z) > 0.1 ? Math.sign(z) : this.rng.chance(0.5) ? 1 : -1;
+      spot.set(-dir * (HALF_L + 0.55), 0, side * this.rng.float(1.5, 2.6));
+      inward.set(dir, 0, 0);
+    } else if (HALF_W - Math.abs(z) <= HALF_L - Math.abs(x) + 1) {
+      const sz = z >= 0 ? 1 : -1;
+      spot.set(clamp(x, -HALF_L + 1.2, HALF_L - 1.2), 0, sz * (HALF_W + 0.55));
+      inward.set(0, 0, -sz);
+    } else {
+      const sx = x >= 0 ? 1 : -1;
+      let zz = clamp(z, -HALF_W + 1.2, HALF_W - 1.2);
+      if (Math.abs(zz) < 1.5) zz = zz >= 0 ? 1.5 : -1.5;
+      spot.set(sx * (HALF_L + 0.55), 0, zz);
+      inward.set(-sx, 0, 0);
+    }
+    const mates = this.onCourt(team);
+    let inbounder: Athlete;
+    if (reason === 'score') {
+      const ref = this.ball.pos;
+      inbounder = mates.filter((m) => m.slot !== 0).sort((p, q) => hdist(p.pos, ref) - hdist(q.pos, ref))[0] ?? mates[0];
+    } else inbounder = mates.find((m) => m.slot === 2) ?? mates.find((m) => m.slot !== 0) ?? mates[0];
+    const receiver = mates.find((m) => m.slot === 0 && m !== inbounder) ?? mates.find((m) => m !== inbounder)!;
+    this.inbound = { team, spot, inward, reason, inbounder, receiver, t: 0, manual: false, passAt: 0, cut: this.rng.float(0, Math.PI * 2) };
+    this.refreshInboundManual();
     this.phase = 'dead';
-    this.phaseTimer = this.opts.reel ? Math.min(seconds, 0.6) : seconds;
-    this.pendingInbound = inbound;
+    this.phaseTimer = this.opts.reel ? Math.min(delay, 0.5) : delay;
     this.holder = null;
     this.ball.shot = null;
     this.ball.pass = null;
     this.ball.mode = 'loose';
-    this.possession = inbound.team;
+    this.possession = team;
+    this.clockHeld = true;
+    this.shotClock = 24;
+    this.callForBall = null;
     for (const a of this.athletes) {
       a.driving = false;
       a.cutting = false;
+      a.move = null;
+      a.breakout = false;
+      a.oobPush = 0;
       if (a.action.type !== 'none' && a.action.type !== 'catch') a.action.type = 'none';
+      a.reactAt = this.time + this.rng.float(0.05, 0.45);
     }
-    this.opts.camera.attackDir = this.attackDir(inbound.team);
+    this.opts.camera.attackDir = dir;
+    if (instant) {
+      this.placeFormation();
+      this.takeInboundBall();
+    }
+    this.pickControlled();
   }
 
-  private resolveInbound() {
-    const ib = this.pendingInbound!;
-    this.pendingInbound = null;
-    const team = ib.team;
-    this.shotClock = 24;
-    // The inbounder is the closest teammate to the inbound spot.
-    const mates = this.onCourt(team).slice().sort((a, b) => Math.hypot(a.pos.x - ib.x, a.pos.z - ib.z) - Math.hypot(b.pos.x - ib.x, b.pos.z - ib.z));
-    const inb = mates[0];
-    inb.pos.set(clamp(ib.x, -HALF_L + 0.6, HALF_L - 0.6), 0, clamp(ib.z, -HALF_W + 0.6, HALF_W - 0.6));
+  /** A user inbounds by hand on their own team's throw-ins, except after made baskets (auto, like 2K). */
+  private refreshInboundManual() {
+    const ib = this.inbound;
+    if (!ib) return;
+    ib.manual = this.opts.userControlled && ib.team === 0 && ib.reason !== 'score' && (!this.opts.career || ib.inbounder === this.userAthlete);
+  }
+
+  /** Snap every player straight to their dead-ball spot (period starts, career fast-forwards). */
+  private placeFormation() {
+    const ib = this.inbound!;
+    for (const a of this.athletes) {
+      if (!a.onCourt) continue;
+      a.reactAt = 0;
+      this.deadBallTarget(a, a.target);
+      a.pos.copy(a.target);
+      a.vel.set(0, 0, 0);
+      const look = a === ib.inbounder ? this.tmp.copy(ib.spot).add(ib.inward) : a.team === ib.team ? this.tmp.copy(this.basket(a.team, this.tmp2)) : this.tmp.copy(ib.spot);
+      a.facing = Math.atan2(look.x - a.pos.x, look.z - a.pos.z);
+      a.yaw = a.facing;
+      a.char.root.position.copy(a.pos);
+      a.char.root.rotation.y = a.yaw;
+    }
+  }
+
+  /** The inbounder takes the ball out of bounds. */
+  private takeInboundBall() {
+    const ib = this.inbound!;
+    const inb = ib.inbounder;
+    inb.pos.copy(ib.spot);
     inb.vel.set(0, 0, 0);
-    this.ball.place(inb.pos.x, 1, inb.pos.z);
-    this.giveBall(inb);
-    this.phase = 'live';
+    inb.action.type = 'none';
+    inb.move = null;
+    inb.facing = Math.atan2(ib.inward.x, ib.inward.z);
+    this.holder = inb;
+    this.possession = ib.team;
+    this.ball.mode = 'held';
+    this.ball.shot = null;
+    this.ball.pass = null;
+    this.ball.lastTouchTeam = ib.team;
+    this.clockHeld = true;
+  }
+
+  /** Dead ball over: once the inbounder is on the spot, start the throw-in. */
+  private beginInboundPhase() {
+    const ib = this.inbound;
+    if (!ib) {
+      this.phase = 'live';
+      this.pickControlled();
+      return;
+    }
+    // Wait for the inbounder to reach the spot (bounded, so a stuck player cannot stall the game).
+    const far = hdist(ib.inbounder.pos, ib.spot) > 0.8;
+    if (this.holder !== ib.inbounder && far && this.phaseTimer > -2.5 && !this.opts.reel) return;
+    this.takeInboundBall();
+    this.phase = 'inbound';
+    ib.t = 0;
+    ib.passAt = ib.manual ? 4.5 : this.rng.float(0.6, 1.3);
     this.pickControlled();
+  }
+
+  /** Throw-in: the AI waits for the receiver to come open; a user inbounder has a few seconds to choose. */
+  private updateInbound(dt: number, mods: Mods | null) {
+    const ib = this.inbound!;
+    ib.t += dt;
+    const inb = ib.inbounder;
+    if (this.holder !== inb || inb.action.type !== 'none' || ib.t < ib.passAt) return;
+    const userPicks = ib.manual && this.controlled === inb && !this.autopilot;
+    const open = this.nearestOpponent(ib.receiver).dist > 1.3;
+    if (!userPicks && !open && ib.t < ib.passAt + 1.4) return;
+    const target = open ? ib.receiver : this.pickPassTarget(inb, null, mods) ?? ib.receiver;
+    this.startPass(inb, target, 'chest');
+  }
+
+  /** Where a player goes while the ball is dead or being inbounded. */
+  private deadBallTarget(a: Athlete, out: THREE.Vector3): THREE.Vector3 {
+    const ib = this.inbound!;
+    if (a.team === ib.team) {
+      if (a === ib.inbounder) return out.copy(ib.spot);
+      if (a === ib.receiver) return this.receiverTarget(ib, out);
+      return this.transitionTarget(a, ib.spot, out);
+    }
+    if (this.matchup(a) === ib.inbounder && ib.reason !== 'score' && ib.reason !== 'period' && ib.reason !== 'sub') {
+      // Pressure a sideline / frontcourt throw-in from just inside the line.
+      out.copy(ib.spot).addScaledVector(ib.inward, 1.3);
+      out.y = 0;
+      return out;
+    }
+    return this.defenseTarget(a, ib.spot, out);
+  }
+
+  /** The receiver works to get open a few metres inside the line, with a V-cut while waiting. */
+  private receiverTarget(ib: InboundState, out: THREE.Vector3): THREE.Vector3 {
+    const deep = ib.reason === 'score' || ib.reason === 'period' || ib.reason === 'sub';
+    out.copy(ib.spot).addScaledVector(ib.inward, deep ? 4.4 : 3.2);
+    if (deep) out.z = -ib.spot.z * 0.6;
+    if (this.phase === 'inbound') {
+      const lat = this.tmpB.set(-ib.inward.z, 0, ib.inward.x);
+      out.addScaledVector(lat, Math.sin(ib.t * 1.8 + ib.cut) * 1.6);
+    }
+    out.x = clamp(out.x, -HALF_L + 0.8, HALF_L - 0.8);
+    out.z = clamp(out.z, -HALF_W + 0.8, HALF_W - 0.8);
+    out.y = 0;
+    return out;
+  }
+
+  /**
+   * Early offense: wings sprint the outside lanes ahead of the ball, the centre
+   * runs the middle to the rim and the power forward trails, then each lane
+   * bends onto its half-court spot as the ball advances.
+   */
+  private transitionTarget(a: Athlete, ballRef: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const dir = this.attackDir(a.team);
+    const slot = a.slot % 5;
+    const spot = this.spotWorld(a.team, slot, this.tmpA);
+    const spotP = dir * spot.x;
+    const ballP = dir * ballRef.x;
+    let p = Math.min(spotP, ballP + TRANSITION_LEAD[slot]);
+    p = Math.max(p, -HALF_L + 2.2);
+    const prog = clamp((p + 3) / Math.max(1, spotP + 3), 0, 1);
+    const k = prog * prog * (3 - 2 * prog);
+    const z = lerp(TRANSITION_LANE[slot] * (a.team === 0 ? 1 : -1), spot.z, k);
+    return out.set(dir * p, 0, z);
+  }
+
+  /**
+   * Goal-side position on the matched-up man. In transition the defense gets
+   * back first: off-ball defenders retreat to the top of their key and the ball
+   * is picked up around half court.
+   */
+  private defenseTarget(a: Athlete, ballRef: THREE.Vector3, out: THREE.Vector3, offOverride: number | null = null): THREE.Vector3 {
+    const man = this.matchup(a);
+    if (!man) return out.copy(a.pos);
+    const dirD = this.attackDir(man.team);
+    const dx = dirD * RIM_X - man.pos.x;
+    const dz = -man.pos.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const onBall = this.holder === man;
+    const off = offOverride ?? (onBall ? 1.1 : clamp(1.0 + hdist(man.pos, ballRef) * 0.25, 1.0, 3.2));
+    out.set(man.pos.x + (dx / len) * off, 0, man.pos.z + (dz / len) * off);
+    const minP = onBall ? -1.0 : 3.0;
+    if (dirD * out.x < minP) {
+      out.x = dirD * minP;
+      out.z = lerp(out.z, man.pos.z * 0.55, 0.6);
+    }
+    out.x = clamp(out.x, -HALF_L + 0.4, HALF_L - 0.4);
+    out.z = clamp(out.z, -HALF_W + 0.4, HALF_W - 0.4);
+    return out;
   }
 
   private endPeriod() {
     audio.buzzer();
+    this.inbound = null;
+    this.clockHeld = true;
     const tied = this.scores[0] === this.scores[1];
     if (this.period >= 4 && !tied) {
       if (this.opts.script && this.opts.script.userWins !== this.margin > 0) this.directorMisses++;
@@ -442,6 +697,7 @@ export class Match {
         const won = (a.team === 0) === this.margin > 0;
         a.char.setState(won ? 'celebrate' : 'dejected');
         a.action.type = 'none';
+        a.move = null;
       }
       this.holder = null;
       this.ball.mode = 'loose';
@@ -458,7 +714,7 @@ export class Match {
     this.period++;
     this.setupPeriodStart();
     this.phase = 'intro';
-    this.phaseTimer = this.opts.reel ? 0.2 : 1.6;
+    this.phaseTimer = this.opts.reel ? 0.2 : 1.0;
   }
 
   // ---------------------------------------------------------------------------
@@ -540,18 +796,11 @@ export class Match {
       this.endPeriod();
       return;
     }
-    // Resume with a fresh inbound for whichever team.
+    // Resume with a throw-in for whichever team, players already in formation.
     const team: 0 | 1 = this.rng.chance(0.5) ? 0 : 1;
-    this.possession = team;
     this.holder = null;
-    for (const a of this.athletes) {
-      if (!a.onCourt) continue;
-      this.homeSpot(a, true);
-      a.pos.copy(a.target);
-      a.vel.set(0, 0, 0);
-      a.action.type = 'none';
-    }
-    this.startDead(0.8, { team, x: -this.attackDir(team) * (HALF_L - 2.5), z: 0, reason: 'sub' });
+    for (const a of this.athletes) if (a.onCourt) this.resetAthlete(a);
+    this.prepareInbound(team, 0, this.rng.chance(0.5) ? 2 : -2, 'sub', 0.8, true);
   }
 
   subUserIn() {
@@ -566,8 +815,10 @@ export class Match {
     u.char.root.visible = true;
     u.pos.copy(starter.pos);
     u.vel.set(0, 0, 0);
+    u.facing = u.yaw = starter.yaw;
     u.char.root.position.copy(u.pos);
-    if (this.holder === starter) this.giveBall(u);
+    u.char.root.rotation.y = u.yaw;
+    this.swapIn(starter, u);
     this.userOnCourt = true;
     this.controlled = u;
     this.updateHighlights();
@@ -583,13 +834,27 @@ export class Match {
       starter.char.root.visible = true;
       starter.pos.copy(u.pos);
       starter.char.root.position.copy(starter.pos);
-      if (this.holder === u) this.giveBall(starter);
+      this.swapIn(u, starter);
     }
     u.onCourt = false;
     u.char.root.visible = false;
     this.userOnCourt = false;
     this.controlled = null;
     this.updateHighlights();
+  }
+
+  /** Hand a substituted player's role (ball, throw-in duties) to their replacement without disturbing the play. */
+  private swapIn(out: Athlete, inn: Athlete) {
+    if (this.holder === out) {
+      this.holder = inn;
+      inn.ballHand = out.ballHand;
+    }
+    const ib = this.inbound;
+    if (ib) {
+      if (ib.inbounder === out) ib.inbounder = inn;
+      if (ib.receiver === out) ib.receiver = inn;
+      this.refreshInboundManual();
+    }
   }
 
   /** Whether the current career moment has ended. */
@@ -606,7 +871,6 @@ export class Match {
     if (this.paused) return;
     this.time += dt;
     this.phaseTime[this.phase] = (this.phaseTime[this.phase] ?? 0) + dt;
-    const input = this.opts.input.state;
     const mods = this.director
       ? this.director.mods(this.t01, this.margin, this.clock, this.userAthlete ? { pts: this.userAthlete.stats.pts, ast: this.userAthlete.stats.ast, reb: this.userAthlete.stats.reb } : undefined, this.userAthlete ? this.careerFraction() : this.t01)
       : null;
@@ -615,32 +879,33 @@ export class Match {
     if (this.phase === 'intro' || this.phase === 'dead' || this.phase === 'period' || this.phase === 'end') {
       this.phaseTimer -= dt;
       if (this.phaseTimer <= 0) {
-        if (this.phase === 'intro') {
-          this.phase = 'live';
-          this.pickControlled();
-        } else if (this.phase === 'dead') this.resolveInbound();
+        if (this.phase === 'intro' || this.phase === 'dead') this.beginInboundPhase();
         else if (this.phase === 'period') this.nextPeriod();
       }
     }
+    if (this.phase === 'inbound') this.updateInbound(dt, mods);
     const live = this.phase === 'live';
-    if (live) {
+    if (live && !this.clockHeld) {
       this.clock -= dt;
       this.elapsed += dt;
       this.shotClock -= dt;
       if (this.shotClock <= 0 && this.holder && !this.ball.shot) {
         this.shotClockViolation();
       }
-      if (this.clock <= 0) {
-        this.clock = 0;
-        // Let a shot in the air finish.
-        if (!this.ball.shot) this.endPeriod();
-      }
+    }
+    if (this.phase === 'live' && this.clock <= 0) {
+      this.clock = 0;
+      // Let a shot in the air finish.
+      if (!this.ball.shot) this.endPeriod();
     }
 
     // Controlled player input.
-    if (live && this.controlled && this.opts.userControlled) {
-      if (this.autopilot === 'stall') this.applyStall(dt);
-      else if (!this.autopilot) this.applyUserInput(dt, mods);
+    // Dead balls are reset by the AI (like 2K); the user takes over once the throw-in is ready.
+    const canInput = this.phase === 'live' || this.phase === 'inbound';
+    if (canInput && this.controlled && this.opts.userControlled) {
+      if (this.autopilot === 'stall') {
+        if (this.phase === 'live') this.applyStall(dt);
+      } else if (!this.autopilot) this.applyUserInput(dt, mods);
     }
 
     // AI.
@@ -648,9 +913,10 @@ export class Match {
       if (!a.onCourt) continue;
       a.cooldown = Math.max(0, a.cooldown - dt);
       a.stunned = Math.max(0, a.stunned - dt);
-      if (a === this.controlled && live && this.autopilot !== 'ai') continue;
-      this.aiThink(a, dt, mods, live);
+      if (this.isUserDriven(a)) continue;
+      this.aiThink(a, dt, mods, this.phase === 'live');
     }
+    if (this.holder && this.phase === 'live') this.autoHand(this.holder, dt);
 
     // Movement & actions.
     for (const a of this.athletes) {
@@ -659,6 +925,13 @@ export class Match {
       this.moveAthlete(a, dt);
     }
     this.separate();
+    for (const a of this.athletes) if (a.onCourt) this.clampInside(a);
+    // A ball handler who steps on or over the line turns it over.
+    if (this.phase === 'live' && this.holder) {
+      const h = this.holder;
+      const airborne = h.action.type === 'layup' || h.action.type === 'dunk' || h.action.type === 'shoot';
+      if (!airborne && (Math.abs(h.pos.x) > HALF_L - 0.03 || Math.abs(h.pos.z) > HALF_W - 0.03)) this.holderOutOfBounds(h);
+    }
 
     // Characters.
     for (const a of this.athletes) {
@@ -667,7 +940,7 @@ export class Match {
     }
 
     // Ball.
-    this.updateBall(dt, mods, live);
+    this.updateBall(dt, mods, this.phase === 'live');
     this.processBallEvents(mods);
 
     // Camera.
@@ -679,6 +952,15 @@ export class Match {
     this.crowdLevel += (0.2 - this.crowdLevel) * dt * 0.5;
     audio.crowd(this.crowdLevel);
     if (Math.floor(this.time * 4) !== Math.floor((this.time - dt) * 4)) this.drawBoard();
+  }
+
+  /** Whether the user's input (rather than the AI) moves this player this frame. */
+  private isUserDriven(a: Athlete): boolean {
+    if (a !== this.controlled || !this.opts.userControlled || this.autopilot === 'ai') return false;
+    if (this.autopilot === 'stall') return this.phase === 'live';
+    if (this.phase === 'live') return true;
+    // During a throw-in the user moves their player (to get open or deny), unless they are the inbounder.
+    return this.phase === 'inbound' && !(this.inbound && a === this.inbound.inbounder);
   }
 
   private careerFraction() {
@@ -705,15 +987,33 @@ export class Match {
   // ---------------------------------------------------------------------------
   // User input
 
-  private applyUserInput(dt: number, mods: ReturnType<Director['mods']> | null) {
+  /**
+   * 2K default controls. Offense with the ball: Square shoot, Cross pass,
+   * Circle bounce pass, Triangle lob, right stick dribble moves. Off the ball:
+   * Cross calls for the ball. Defense: Square steal, Triangle block, Cross switch.
+   */
+  private applyUserInput(dt: number, mods: Mods | null) {
     const a = this.controlled!;
     const s = this.opts.input.state;
     const cam = this.opts.camera;
     const dir = cam.moveToWorld(s.move.x, s.move.y, this.tmp);
     const mag = Math.hypot(s.move.x, s.move.y);
+    this.userMoveDir.copy(dir);
+    this.userMoveMag = mag;
     a.sprint = s.sprint;
-    const busy = a.action.type !== 'none' && a.action.type !== 'catch' && a.action.type !== 'crossover';
-    if (!busy) {
+    const ib = this.inbound;
+    // Throw-in: aim with the stick, pick the pass with the pass buttons.
+    if (this.phase === 'inbound' && ib && a === ib.inbounder && this.holder === a) {
+      if (mag > 0.2) a.facing = Math.atan2(dir.x, dir.z);
+      const style: PassStyle | null = s.pressed.b ? 'chest' : s.pressed.x ? 'bounce' : s.pressed.y ? 'lob' : null;
+      if (style && a.action.type === 'none') {
+        const t = this.pickPassTarget(a, mag > 0.2 ? dir : null, mods);
+        if (t) this.startPass(a, t, style);
+      }
+      return;
+    }
+    const busy = a.action.type !== 'none' && a.action.type !== 'catch';
+    if (!busy && !(a.move && !a.move.auto)) {
       const speed = this.maxSpeed(a) * mag;
       a.target.copy(a.pos).addScaledVector(dir, 2);
       const desired = this.tmp2.copy(dir).multiplyScalar(speed);
@@ -724,6 +1024,7 @@ export class Match {
         a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);
       }
     }
+    if (this.phase !== 'live') return;
     const hasBall = this.holder === a;
     if (hasBall) {
       // Shoot: hold & release.
@@ -744,20 +1045,25 @@ export class Match {
         a.action.releaseAt = a.action.t;
         this.shotMeter.active = false;
       }
-      if (s.pressed.b && a.action.type === 'none') {
+      const style: PassStyle | null = s.pressed.b ? 'chest' : s.pressed.x ? 'bounce' : s.pressed.y ? 'lob' : null;
+      if (style && a.action.type === 'none') {
         const target = this.pickPassTarget(a, mag > 0.2 ? dir : null, mods);
-        if (target) this.startPass(a, target);
+        if (target) this.startPass(a, target, style);
       }
-      if ((s.pressed.x || s.flick) && a.action.type === 'none' && a.cooldown <= 0) {
-        const flick = s.flick ? cam.moveToWorld(s.flick.x, s.flick.y, this.tmp2).clone() : null;
-        this.crossover(a, flick, mods);
+      // Skill stick: dribble moves read relative to the way the player faces.
+      if (s.flick && a.action.type === 'none' && (!a.move || a.move.auto) && a.cooldown <= 0) {
+        const w = cam.moveToWorld(s.flick.x, s.flick.y, this.tmpA);
+        if (a.move) this.endMove(a);
+        this.startDribbleMove(a, this.moveFromFlick(a, w), mods);
       }
     } else if (a.team === this.possession) {
-      // Off-ball offense: nothing special (could add cut/screen calls).
+      if (s.pressed.b) {
+        this.callForBall = { who: a, at: this.time };
+        this.events.push({ type: 'tip', team: a.team, text: 'CALLING FOR IT' });
+      }
     } else {
-      // Defense.
-      if (s.pressed.a && a.action.type === 'none') this.startAction(a, 'block');
-      if (s.pressed.x && a.action.type === 'none' && a.cooldown <= 0) this.startAction(a, 'steal');
+      if (s.pressed.a && a.action.type === 'none' && a.cooldown <= 0) this.startAction(a, 'steal');
+      if (s.pressed.y && a.action.type === 'none' && a.cooldown <= 0) this.startAction(a, 'block');
       if (s.pressed.b) this.switchControlled();
     }
     if (this.shotMeter.active) this.shotMeter.t += dt;
@@ -797,28 +1103,26 @@ export class Match {
     return s;
   }
 
-  private aiThink(a: Athlete, dt: number, mods: ReturnType<Director['mods']> | null, live: boolean) {
+  private aiThink(a: Athlete, dt: number, mods: Mods | null, live: boolean) {
     const offense = a.team === this.possession;
     const myForce = mods && mods.force > 0 ? (mods.forceDir > 0 ? a.team === 0 : a.team === 1) : false; // force pushes in my favour
     const theirForce = mods && mods.force > 0 ? !myForce : false;
     a.sprint = false;
+    if (this.phase === 'end' || this.phase === 'period') {
+      a.target.copy(a.pos);
+      return;
+    }
     if (!live) {
-      if (this.phase === 'dead' && this.pendingInbound) {
-        // Walk to the next set.
-        this.possession = this.pendingInbound.team;
-        this.homeSpot(a, true);
-        if (a.team === this.pendingInbound.team && this.pendingInbound.reason !== 'score') {
-          // Offense sets up near the inbound spot instead of the backcourt.
-          const dir = this.attackDir(a.team);
-          this.spotWorld(a.team, a.slot, a.target);
-          a.target.x = lerp(a.target.x, this.pendingInbound.x, 0.5) - dir * 2;
-        }
-        a.sprint = false;
-      } else if (this.phase === 'end') {
-        a.target.copy(a.pos);
+      const ib = this.inbound;
+      if (ib) {
+        if (this.time >= a.reactAt || a === ib.inbounder) this.deadBallTarget(a, a.target);
+        const far = hdist(a.pos, a.target);
+        a.sprint = a === ib.inbounder ? far > 2.5 : far > 7;
       }
       return;
     }
+    // Individual reaction delay after a change of possession.
+    if (this.time < a.reactAt && this.holder !== a) return;
     // Loose ball: chase it if you are among the closest.
     if (this.ball.mode === 'loose') {
       const d = hdist(a.pos, this.ball.pos);
@@ -839,6 +1143,8 @@ export class Match {
       if (a === receiver) {
         // Meet the ball.
         a.target.set(this.ball.pos.x + this.ball.vel.x * 0.2, 0, this.ball.pos.z + this.ball.vel.z * 0.2);
+        a.target.x = clamp(a.target.x, -HALF_L + 0.3, HALF_L - 0.3);
+        a.target.z = clamp(a.target.z, -HALF_W + 0.3, HALF_W - 0.3);
         return;
       }
       if (!offense && theirForce) {
@@ -860,6 +1166,15 @@ export class Match {
     const basket = this.basket(a.team, this.tmp3);
     const isHandler = this.holder === a;
     if (!isHandler) {
+      const ref = this.holder ? this.holder.pos : this.ball.pos;
+      const dirA = this.attackDir(a.team);
+      if (dirA * ref.x < 1.5) {
+        // Ball still in the backcourt: run the floor in lanes.
+        a.cutting = false;
+        this.transitionTarget(a, ref, a.target);
+        a.sprint = dirA * (a.target.x - a.pos.x) > 3 && hdist(a.pos, a.target) > 5;
+        return;
+      }
       // Spot up, with occasional cuts. Career: when the director wants to feed the user, get open.
       a.cutTimer -= dt;
       if (a.cutTimer <= 0) {
@@ -868,23 +1183,25 @@ export class Match {
       }
       this.spotWorld(a.team, a.slot, a.target);
       if (a.cutting) {
-        a.target.x = basket.x - this.attackDir(a.team) * this.rng.float(1.5, 2.5);
+        a.target.x = basket.x - dirA * this.rng.float(1.5, 2.5);
         a.target.z = a.target.z * 0.3;
         a.sprint = true;
       } else if (this.holder && hdist(this.holder.pos, a.target) < 2.2) {
         // Stay spaced from the ball handler.
         a.target.z += a.target.z > 0 ? 1.5 : -1.5;
       }
-      // If the ball is being walked up, trail behind rather than teleport to spots.
-      if (this.holder && Math.sign(basket.x - this.holder.pos.x) === Math.sign(basket.x) && Math.abs(this.holder.pos.x - basket.x) > 16) {
-        a.target.x = this.holder.pos.x + this.attackDir(a.team) * (2 + a.slot);
-        a.target.z = (a.slot - 2) * 2.6 * (a.team === 0 ? 1 : -1);
-        a.sprint = Math.abs(this.holder.pos.x - basket.x) > 20;
-      }
       return;
     }
     // Ball handler.
     if (a.action.type !== 'none' && a.action.type !== 'catch') return;
+    if (a.move && !a.move.auto) return;
+    // A teammate (the user, in career mode) calling for the ball.
+    const call = this.callForBall;
+    if (call && call.who.onCourt && call.who.team === a.team && call.who !== a && this.time - call.at < 1.3 && a.action.type === 'none') {
+      this.callForBall = null;
+      this.startPass(a, call.who, 'chest');
+      return;
+    }
     const d = Math.hypot(basket.x - a.pos.x, basket.z - a.pos.z);
     const { who: defender, dist: openness } = this.nearestOpponent(a);
     const inFrontcourt = (basket.x - a.pos.x) * this.attackDir(a.team) < HALF_L + 2 && Math.abs(a.pos.x - basket.x) < HALF_L;
@@ -899,6 +1216,8 @@ export class Match {
         const dunk = a.def.ratings.dunk >= 70 && this.rng.chance(0.65 + (needScore ? 0.3 : 0));
         this.startAction(a, dunk ? 'dunk' : 'layup');
         a.driving = false;
+      } else if (defender && openness < 1.5 && openness > 0.9 && a.cooldown <= 0 && this.rng.chance(dt * 1.1)) {
+        this.startDribbleMove(a, this.rng.pick(['cross', 'spin', 'hesi', 'behind'] as MoveKind[]), mods);
       } else if (defender && openness < 0.9 && this.rng.chance(dt * 1.5)) {
         // Blocked off: kick it out.
         const t = this.pickPassTarget(a, null, mods);
@@ -932,7 +1251,7 @@ export class Match {
     if (!inFrontcourt || Math.abs(a.pos.x - basket.x) > 11) {
       // Bring the ball up.
       a.target.set(basket.x - this.attackDir(a.team) * 7.5, 0, a.pos.z * 0.5);
-      a.sprint = Math.abs(a.pos.x - basket.x) > 9;
+      a.sprint = Math.abs(a.pos.x - basket.x) > 15;
       return;
     }
     const timeHeld = this.time - a.lastCatch;
@@ -966,7 +1285,7 @@ export class Match {
       // Get away from the defender.
       const away = this.tmp2.copy(a.pos).sub(defender.pos).setY(0).normalize();
       a.target.copy(a.pos).addScaledVector(away, 2.5);
-      if (a.cooldown <= 0 && this.rng.chance(0.4)) this.crossover(a, null, mods);
+      if (a.cooldown <= 0 && this.rng.chance(0.45)) this.startDribbleMove(a, this.aiMoveKind(), mods);
     }
   }
 
@@ -986,17 +1305,15 @@ export class Match {
     return true;
   }
 
-  private aiDefense(a: Athlete, dt: number, mods: ReturnType<Director['mods']> | null, myForce: boolean, theirForce: boolean) {
+  private aiDefense(a: Athlete, dt: number, mods: Mods | null, myForce: boolean, theirForce: boolean) {
     const man = this.matchup(a);
     if (!man) return;
     const basket = this.basket(man.team, this.tmp3);
     const ballHandler = this.holder;
     const guardingBall = ballHandler === man;
-    const dx = basket.x - man.pos.x;
-    const dz = basket.z - man.pos.z;
-    const len = Math.hypot(dx, dz) || 1;
+    const ballRef = ballHandler ? ballHandler.pos : this.ball.pos;
     // Distance to play off the man: tight on the ball, sag when far from it.
-    const ballDist = ballHandler ? hdist(man.pos, ballHandler.pos) : 5;
+    const ballDist = hdist(man.pos, ballRef);
     let off = guardingBall ? 1.05 : clamp(1.0 + ballDist * 0.25, 1.0, 3.2);
     if (myForce) off = guardingBall ? 0.8 : 0.9; // lock down
     if (theirForce) off = guardingBall ? 1.6 : 3.5; // give space
@@ -1005,20 +1322,15 @@ export class Match {
     if (!guardingBall && ballHandler && ballHandler.driving && hdist(a.pos, ballHandler.pos) < 3.5 && !theirForce) {
       a.target.set(lerp(ballHandler.pos.x, basket.x, 0.5), 0, lerp(ballHandler.pos.z, basket.z, 0.5));
     } else {
-      a.target.set(man.pos.x + (dx / len) * off, 0, man.pos.z + (dz / len) * off);
+      this.defenseTarget(a, ballRef, a.target, off);
     }
     a.sprint = hdist(a.pos, a.target) > 4 || (guardingBall && (ballHandler!.sprint || myForce));
-    // Transition: if the offense is far upcourt, get back first.
-    if (ballHandler && Math.abs(ballHandler.pos.x - basket.x) > 15) {
-      a.target.set(basket.x - this.attackDir(man.team) * (4 + a.slot * 1.3), 0, (a.slot - 2) * 2.2);
-      a.sprint = true;
-    }
     // Contest shots and attempt steals.
     if (guardingBall && ballHandler) {
       const d = hdist(a.pos, ballHandler.pos);
       if ((ballHandler.action.type === 'shoot' || ballHandler.action.type === 'layup') && ballHandler.action.t < 0.25 && d < 1.7 && a.action.type === 'none' && a.cooldown <= 0) {
         if (this.rng.chance(theirForce ? 0.15 : myForce ? 0.95 : 0.6)) this.startAction(a, 'block');
-      } else if (d < (myForce ? 1.6 : 1.25) && a.action.type === 'none' && a.cooldown <= 0 && (ballHandler.action.type === 'none' || ballHandler.action.type === 'crossover')) {
+      } else if (d < (myForce ? 1.6 : 1.25) && a.action.type === 'none' && a.cooldown <= 0 && ballHandler.action.type === 'none') {
         const rate = myForce ? 2.2 : theirForce ? 0.04 : 0.09 + a.def.ratings.steal / 1000;
         if (this.rng.chance(dt * rate)) this.startAction(a, 'steal');
       }
@@ -1034,6 +1346,8 @@ export class Match {
     for (const m of this.teammates(a)) {
       const d = hdist(a.pos, m.pos);
       if (d < 1.0 || d > 20) continue;
+      // Never pass to a teammate standing out of bounds.
+      if (Math.abs(m.pos.x) > HALF_L - 0.3 || Math.abs(m.pos.z) > HALF_W - 0.3) continue;
       const { dist: open } = this.nearestOpponent(m);
       const toBasket = Math.hypot(basket.x - m.pos.x, basket.z - m.pos.z);
       let score = open * 0.6 - toBasket * 0.08 - d * 0.05 + this.rng.next() * 0.6;
@@ -1066,8 +1380,9 @@ export class Match {
   // Actions
 
   startAction(a: Athlete, type: ActionType, target?: Athlete) {
-    const durations: Record<ActionType, number> = { none: 0, shoot: 0.95, layup: 1.0, dunk: 1.1, pass: 0.42, block: 0.9, steal: 0.5, catch: 0.3, crossover: 0.3 };
-    a.action = { type, t: 0, dur: durations[type], releaseAt: type === 'shoot' ? 0.46 : type === 'layup' ? 0.45 : type === 'dunk' ? 0.5 : 0.13, released: !(type === 'shoot' && a === this.controlled && this.opts.userControlled), quality: 0.7, target };
+    const durations: Record<ActionType, number> = { none: 0, shoot: 0.95, layup: 1.0, dunk: 1.1, pass: 0.42, block: 0.9, steal: 0.5, catch: 0.3 };
+    if (a.move) this.endMove(a);
+    a.action = { type, t: 0, dur: durations[type], releaseAt: type === 'shoot' ? 0.46 : type === 'layup' ? 0.45 : type === 'dunk' ? 0.5 : 0.13, released: !(type === 'shoot' && a === this.controlled && this.opts.userControlled && !this.autopilot), quality: 0.7, target };
     if (type === 'shoot' || type === 'layup' || type === 'dunk') {
       const b = this.basket(a.team, this.tmp3);
       a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);
@@ -1080,7 +1395,7 @@ export class Match {
         const reach = Math.max(0.2, len - 0.9);
         a.vel.set((dx / len) * reach / 0.55, 0, (dz / len) * reach / 0.55);
       }
-      if (a !== this.controlled || !this.opts.userControlled) {
+      if (a !== this.controlled || !this.opts.userControlled || this.autopilot) {
         // Bot timing quality: mostly good, sometimes slightly off.
         a.action.quality = clamp(0.7 + this.rng.gauss() * 0.15, 0.2, 1);
       }
@@ -1098,27 +1413,127 @@ export class Match {
       a.cooldown = 1.2;
       a.vel.multiplyScalar(0.3);
     }
-    a.char.setState(type === 'crossover' ? 'dribble' : type === 'none' ? 'idle' : type);
+    a.char.setState(type === 'none' ? 'idle' : type);
   }
 
-  private startPass(a: Athlete, target: Athlete) {
+  private startPass(a: Athlete, target: Athlete, style: PassStyle = 'chest') {
     this.startAction(a, 'pass', target);
+    a.action.passStyle = style;
   }
 
-  private crossover(a: Athlete, flick: THREE.Vector3 | null, mods: ReturnType<Director['mods']> | null) {
-    a.cooldown = 0.9;
-    const side = flick ? flick : this.tmp2.set(Math.cos(a.facing) * (this.rng.chance(0.5) ? 1 : -1), 0, -Math.sin(a.facing) * (this.rng.chance(0.5) ? 1 : -1));
-    a.vel.addScaledVector(side.setY(0).normalize(), 5.5);
-    a.action = { type: 'crossover', t: 0, dur: 0.3, releaseAt: 0, released: true, quality: 0 };
+  /** Unit vector toward a player's +1 hand side (the r-bones, local +X) for a given yaw. */
+  private handSide(yaw: number, out: THREE.Vector3) {
+    return out.set(Math.cos(yaw), 0, -Math.sin(yaw));
+  }
+
+  /**
+   * Skill-stick mapping, relative to the way the ball handler faces:
+   *   forward                      hesitation (stop, then explode)
+   *   sideways, away from the ball crossover (to the other hand)
+   *   sideways, toward the ball    spin (toward the ball side, finishing in the other hand)
+   *   back-diagonal, away          between the legs
+   *   back-diagonal, toward        behind the back
+   *   straight back                step-back
+   */
+  private moveFromFlick(a: Athlete, w: THREE.Vector3): MoveKind {
+    const side = this.handSide(a.facing, this.tmp3);
+    const lat = w.x * side.x + w.z * side.z;
+    const fwd = w.x * Math.sin(a.facing) + w.z * Math.cos(a.facing);
+    const ang = (Math.atan2(Math.abs(lat), fwd) * 180) / Math.PI;
+    const toBallSide = (lat >= 0 ? 1 : -1) === a.ballHand;
+    if (ang < 35) return 'hesi';
+    if (ang > 150) return 'stepback';
+    if (ang <= 100) return toBallSide ? 'spin' : 'cross';
+    return toBallSide ? 'behind' : 'legs';
+  }
+
+  private aiMoveKind(): MoveKind {
+    return this.rng.pick(['cross', 'cross', 'legs', 'legs', 'behind', 'hesi', 'hesi', 'spin', 'stepback'] as MoveKind[]);
+  }
+
+  /** Start a dribble move: the ball really changes hands and the body bursts, spins or steps back. */
+  startDribbleMove(a: Athlete, kind: MoveKind, mods: Mods | null) {
+    const from = a.ballHand;
+    const switches = kind !== 'hesi' && kind !== 'stepback';
+    const to = (switches ? -from : from) as 1 | -1;
+    const f = new THREE.Vector3(Math.sin(a.facing), 0, Math.cos(a.facing));
+    const side = this.handSide(a.facing, new THREE.Vector3());
+    const dir = new THREE.Vector3();
+    if (kind === 'cross') dir.copy(side).multiplyScalar(to).addScaledVector(f, 0.5);
+    else if (kind === 'behind') dir.copy(side).multiplyScalar(to).addScaledVector(f, 0.35);
+    else if (kind === 'legs') dir.copy(side).multiplyScalar(to * 0.8).addScaledVector(f, -0.25);
+    else if (kind === 'spin') dir.copy(side).multiplyScalar(from * 0.75).addScaledVector(f, 0.75);
+    else if (kind === 'hesi') dir.copy(f);
+    else dir.copy(f).multiplyScalar(-1);
+    dir.normalize();
+    const dur = MOVE_DUR[kind];
+    const chained = this.time - a.lastMoveEnd < 0.45;
+    a.move = { kind, t: 0, dur, from, to, dir, facing: a.facing, spin: kind === 'spin' ? from : 0, auto: false };
+    a.cooldown = dur * 0.8;
+    a.handSwitchCd = dur + 0.8;
+    a.char.setState('dribble');
+    audio.sneaker();
+    // The move can freeze the defender (better with good handles and when chained).
     const { who, dist } = this.nearestOpponent(a);
-    if (who && dist < 1.8) {
+    if (who && dist < 2.0 && who.stunned <= 0) {
       const disruption = mods ? (a.team === 0 ? 1 / mods.oppSteal : 1 / mods.userSteal) : 1;
-      if (this.rng.chance(clamp(0.45 * (a.def.ratings.handle / 80) * disruption, 0.05, 0.9))) {
-        who.stunned = 0.7;
-        if (a === this.controlled) this.events.push({ type: 'tip', team: a.team, text: 'ANKLES!' });
+      const base: Record<MoveKind, number> = { cross: 0.3, legs: 0.2, behind: 0.24, spin: 0.34, hesi: 0.26, stepback: 0.22 };
+      const p = base[kind] * (a.def.ratings.handle / 80) * disruption * (chained ? 1.35 : 1);
+      if (this.rng.chance(clamp(p, 0.03, 0.85))) {
+        who.stunned = kind === 'stepback' ? 0.45 : kind === 'spin' || kind === 'cross' ? 0.8 : 0.6;
+        if (a === this.controlled) this.events.push({ type: 'tip', team: a.team, text: kind === 'stepback' ? 'CREATED SPACE' : 'ANKLES!' });
       }
     }
-    audio.sneaker();
+  }
+
+  /** While driving, switch to the hand on the side the player is attacking. */
+  private autoHand(a: Athlete, dt: number) {
+    a.handSwitchCd -= dt;
+    if (a.move || a.action.type !== 'none' || a.handSwitchCd > 0) return;
+    const basket = this.basket(a.team, this.tmp3);
+    const side = this.handSide(Math.atan2(basket.x - a.pos.x, basket.z - a.pos.z), this.tmp2);
+    const lat = a.vel.x * side.x + a.vel.z * side.z;
+    if (Math.abs(lat) < 1.8) return;
+    const want = (lat > 0 ? 1 : -1) as 1 | -1;
+    if (want === a.ballHand) return;
+    a.move = { kind: 'cross', t: 0, dur: 0.3, from: a.ballHand, to: want, dir: new THREE.Vector3(), facing: a.facing, spin: 0, auto: true };
+    a.handSwitchCd = 0.9;
+  }
+
+  private endMove(a: Athlete) {
+    const m = a.move;
+    if (!m) return;
+    a.ballHand = m.to;
+    a.move = null;
+    a.lastMoveEnd = this.time;
+    a.char.dribblePhase = 0;
+  }
+
+  /** Advance a dribble move. Returns true while the move's canned motion drives the player. */
+  private stepMove(a: Athlete, dt: number): boolean {
+    const m = a.move;
+    if (!m) return false;
+    if (this.holder !== a) {
+      a.move = null;
+      return false;
+    }
+    m.t += dt;
+    if (m.t >= m.dur) {
+      this.endMove(a);
+      return false;
+    }
+    if (m.auto) return false;
+    const u = m.t / m.dur;
+    const desired = this.tmp;
+    if (m.kind === 'hesi') desired.copy(m.dir).multiplyScalar(u < 0.42 ? 0.6 : 6.4 * Math.sin((Math.PI / 2) * Math.min(1, (u - 0.42) / 0.45)));
+    else if (m.kind === 'stepback') desired.copy(m.dir).multiplyScalar(u < 0.5 ? 4.8 * (1 - u / 0.5) + 0.6 : 0);
+    else {
+      const peak = m.kind === 'spin' ? 5.0 : m.kind === 'cross' ? 4.8 : m.kind === 'behind' ? 4.3 : 3.0;
+      desired.copy(m.dir).multiplyScalar(Math.max(1.2, peak * Math.sin(Math.PI * Math.min(1, u * 1.15))));
+    }
+    if (a.stunned <= 0) a.vel.lerp(desired, Math.min(1, dt * 14));
+    a.facing = m.facing;
+    return true;
   }
 
   private updateAction(a: Athlete, dt: number, mods: ReturnType<Director['mods']> | null) {
@@ -1139,7 +1554,7 @@ export class Match {
       }
     }
     if (act.type === 'pass' && this.holder === a && act.t >= act.releaseAt && act.target) {
-      this.releasePass(a, act.target, mods);
+      this.releasePass(a, act.target, mods, act.passStyle ?? 'chest');
     }
     if (act.type === 'steal' && act.t >= 0.15 && act.t - dt < 0.15) this.resolveSteal(a, mods);
     if (act.t >= act.dur) {
@@ -1278,14 +1693,16 @@ export class Match {
     void contest;
   }
 
-  private releasePass(a: Athlete, target: Athlete, mods: ReturnType<Director['mods']> | null) {
+  private releasePass(a: Athlete, target: Athlete, mods: Mods | null, style: PassStyle = 'chest') {
     this.holder = null;
     const hand = a.char.handWorld(this.tmp);
     this.ball.pos.set(hand.x, Math.max(1.2, hand.y), hand.z);
     const d = hdist(a.pos, target.pos);
-    const flight = clamp(d / 13, 0.25, 1.1);
-    const lead = this.tmp2.copy(target.pos).addScaledVector(target.vel, flight * 0.8);
-    lead.y = 1.35;
+    const flight = style === 'lob' ? clamp(0.6 + d / 15, 0.75, 1.45) : style === 'bounce' ? clamp(d / 11, 0.32, 1.15) : clamp(d / 13, 0.25, 1.1);
+    const lead = this.tmp2.copy(target.pos).addScaledVector(target.vel, flight * 0.85);
+    lead.x = clamp(lead.x, -HALF_L + 0.3, HALF_L - 0.3);
+    lead.z = clamp(lead.z, -HALF_W + 0.3, HALF_W - 0.3);
+    lead.y = style === 'lob' ? 2.1 : 1.35;
     // Bad pass chance.
     const disruption = mods ? (a.team === 0 ? mods.oppSteal : mods.userSteal) : 1;
     const pBad = clamp(0.025 * (80 / a.def.ratings.pass) * disruption, 0.005, 0.6);
@@ -1293,13 +1710,20 @@ export class Match {
       lead.x += this.rng.float(-2.5, 2.5);
       lead.z += this.rng.float(-2.5, 2.5);
     }
-    this.ball.launchTo(lead, flight);
+    if (style === 'bounce') {
+      // Aim at the floor a little past halfway; the bounce carries it up into the receiver's hands.
+      const fp = this.tmp3.copy(this.ball.pos).lerp(lead, 0.58);
+      fp.y = BALL_R;
+      this.ball.launchTo(fp, flight * 0.56);
+    } else this.ball.launchTo(lead, flight);
     this.ball.mode = 'pass';
     this.ball.lastTouchTeam = a.team;
-    this.ball.pass = { fromTeam: a.team, fromIndex: a.slot, toIndex: target.slot, launchedAt: this.time };
+    this.ball.pass = { fromTeam: a.team, fromIndex: a.slot, toIndex: target.slot, launchedAt: this.time, style };
     this.lastPasser = a;
     this.lastPassTime = this.time;
     this.possession = a.team;
+    // The throw-in is away: play is live, the clocks start when it is touched.
+    if (this.phase === 'inbound') this.phase = 'live';
   }
 
   private resolveSteal(a: Athlete, mods: ReturnType<Director['mods']> | null) {
@@ -1309,7 +1733,14 @@ export class Match {
     if (h.action.type === 'shoot' || h.action.type === 'layup' || h.action.type === 'dunk') return;
     const disruption = mods ? (a.team === 1 ? mods.oppSteal : mods.userSteal) : 1;
     let p = 0.22 * (a.def.ratings.steal / 80) * (80 / h.def.ratings.handle) * disruption;
-    if (h.action.type === 'crossover') p *= 0.3;
+    // Mid-move the ball is exposed on a crossover in front, protected behind the back or through the legs.
+    if (h.move) p *= h.move.kind === 'cross' ? 1.25 : h.move.kind === 'spin' ? 0.7 : 0.5;
+    // Reaching from the side the ball is on works; reaching across the body rarely does.
+    else {
+      const side = this.handSide(h.facing, this.tmp3);
+      const fromSide = (a.pos.x - h.pos.x) * side.x + (a.pos.z - h.pos.z) * side.z;
+      p *= (fromSide >= 0 ? 1 : -1) === h.ballHand ? 1.35 : 0.55;
+    }
     if (this.rng.chance(clamp(p, 0.02, 0.97))) {
       a.stats.stl++;
       h.stats.to++;
@@ -1330,7 +1761,7 @@ export class Match {
     audio.whistle();
     this.events.push({ type: 'shotclock', team: h.team, text: 'SHOT CLOCK VIOLATION' });
     const other: 0 | 1 = h.team === 0 ? 1 : 0;
-    this.startDead(1.2, { team: other, x: h.pos.x, z: Math.sign(h.pos.z || 1) * (HALF_W - 0.8), reason: 'turnover' });
+    this.prepareInbound(other, h.pos.x, h.pos.z, 'violation', 1.2);
   }
 
   // ---------------------------------------------------------------------------
@@ -1338,31 +1769,98 @@ export class Match {
 
   private moveAthlete(a: Athlete, dt: number) {
     const act = a.action.type;
-    const controlledLive = a === this.controlled && this.phase === 'live' && this.opts.userControlled && this.autopilot !== 'ai';
+    const userDriven = this.isUserDriven(a);
     const frozen = act === 'shoot' || act === 'block' || act === 'steal' || act === 'pass';
-    if (!controlledLive && !frozen && act !== 'layup' && act !== 'dunk') {
+    const ib = this.inbound;
+    if (ib && this.phase !== 'live' && a === ib.inbounder && this.holder === a) {
+      // Throw-in: planted on the spot, facing the floor (or wherever the user aims).
+      a.vel.set(0, 0, 0);
+      a.pos.copy(ib.spot);
+      if (!(a === this.controlled && this.userMoveMag > 0.2) && act !== 'pass') {
+        a.facing = Math.atan2(ib.receiver.pos.x - a.pos.x, ib.receiver.pos.z - a.pos.z);
+      }
+      return;
+    }
+    const inMove = this.stepMove(a, dt);
+    if (!inMove && !userDriven && !frozen && act !== 'layup' && act !== 'dunk') {
       // Steer toward target.
       const dx = a.target.x - a.pos.x;
       const dz = a.target.z - a.pos.z;
       const d = Math.hypot(dx, dz);
-      const speed = this.maxSpeed(a) * (this.phase === 'live' ? 1 : 0.8);
+      const speed = this.maxSpeed(a) * (this.phase === 'live' ? 1 : 0.85);
       const arrive = clamp(d / 1.2, 0, 1);
       const desired = this.tmp.set(d > 0.05 ? (dx / d) * speed * arrive : 0, 0, d > 0.05 ? (dz / d) * speed * arrive : 0);
       a.vel.lerp(desired, Math.min(1, dt * 9));
-      if (d > 0.3 && a.vel.lengthSq() > 0.2) a.facing = Math.atan2(a.vel.x, a.vel.z);
-      else if (this.holder === a || a.team !== this.possession) {
-        const look = this.holder === a ? this.basket(a.team, this.tmp2) : this.tmp2.copy(this.ball.pos);
-        a.facing = Math.atan2(look.x - a.pos.x, look.z - a.pos.z);
-      }
+      const vel2 = a.vel.lengthSq();
+      const defending = a.team !== this.possession;
+      const ballRef = this.holder ? this.holder.pos : ib && this.phase !== 'live' ? ib.spot : this.ball.pos;
+      if (defending && d < 5 && vel2 < 27) {
+        // Defenders backpedal and shuffle facing the ball rather than turning their backs.
+        a.facing = Math.atan2(ballRef.x - a.pos.x, ballRef.z - a.pos.z);
+      } else if (d > 0.3 && vel2 > 0.2) a.facing = Math.atan2(a.vel.x, a.vel.z);
+      else if (this.holder === a) {
+        const b = this.basket(a.team, this.tmp2);
+        a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);
+      } else a.facing = Math.atan2(ballRef.x - a.pos.x, ballRef.z - a.pos.z);
     } else if (frozen) {
       a.vel.multiplyScalar(1 - Math.min(1, dt * 12));
     } else if (act === 'layup' || act === 'dunk') {
       if (a.action.t > 0.55) a.vel.multiplyScalar(1 - Math.min(1, dt * 6));
     }
+    if (this.holder === a || userDriven) this.applyBoundary(a, dt, userDriven);
     a.pos.addScaledVector(a.vel, dt);
+    this.clampInside(a);
     a.pos.x = clamp(a.pos.x, -HALF_L - APRON, HALF_L + APRON);
     a.pos.z = clamp(a.pos.z, -HALF_W - APRON, HALF_W + APRON);
     a.pos.y = 0;
+  }
+
+  /**
+   * 2K-style soft boundary for the ball handler and the user's player: the
+   * outward part of their velocity fades as they near the line and stops just
+   * inside it. Only a sustained, hard push straight at the line breaks through.
+   */
+  private applyBoundary(a: Athlete, dt: number, user: boolean) {
+    const edgeX = HALF_L - Math.abs(a.pos.x);
+    const edgeZ = HALF_W - Math.abs(a.pos.z);
+    const minEdge = Math.min(edgeX, edgeZ);
+    // A player already outside (an inbounder stepping back in) is not trapped by the wall.
+    if (minEdge < 0 && this.holder !== a) a.breakout = true;
+    // Only sprinting hard, straight at the line, wears the wall down.
+    let pushing = false;
+    if (user && a.sprint && this.userMoveMag > 0.85) {
+      const d = this.userMoveDir;
+      if (edgeX < 0.5 && d.x * Math.sign(a.pos.x) > 0.75) pushing = true;
+      if (edgeZ < 0.5 && d.z * Math.sign(a.pos.z) > 0.75) pushing = true;
+    }
+    a.oobPush = pushing ? a.oobPush + dt : Math.max(0, a.oobPush - dt * 3);
+    if (a.oobPush > 0.35) a.breakout = true;
+    if (a.breakout && !pushing && minEdge > 0.6) a.breakout = false;
+    if (a.breakout) return;
+    for (const axis of ['x', 'z'] as const) {
+      const limit = axis === 'x' ? HALF_L : HALF_W;
+      const p = a.pos[axis];
+      const n = p >= 0 ? 1 : -1;
+      const edge = limit - Math.abs(p);
+      const vOut = a.vel[axis] * n;
+      if (edge < BOUNDARY_BAND && vOut > 0) a.vel[axis] = n * vOut * clamp((edge - EDGE) / (BOUNDARY_BAND - EDGE), 0, 1);
+    }
+  }
+
+  /** Hard stop just inside the lines for walled players (also undoes collision pushes). */
+  private clampInside(a: Athlete) {
+    const walled = (this.holder === a && this.phase === 'live') || (this.isUserDriven(a) && this.phase === 'live');
+    if (!walled || a.breakout) return;
+    a.pos.x = clamp(a.pos.x, -(HALF_L - EDGE), HALF_L - EDGE);
+    a.pos.z = clamp(a.pos.z, -(HALF_W - EDGE), HALF_W - EDGE);
+  }
+
+  private holderOutOfBounds(h: Athlete) {
+    audio.whistle();
+    h.stats.to++;
+    this.events.push({ type: 'oob', team: h.team, text: `${h.def.last.toUpperCase()} STEPS OUT` });
+    const other: 0 | 1 = h.team === 0 ? 1 : 0;
+    this.prepareInbound(other, h.pos.x, h.pos.z, 'oob', 1.3);
   }
 
   private separate() {
@@ -1393,21 +1891,101 @@ export class Match {
     const speed = a.vel.length();
     const speed01 = clamp(speed / SPRINT_SPEED, 0, 1);
     const act = a.action.type;
-    if (act === 'none' || act === 'crossover') {
+    const live = this.phase === 'live';
+    if (act === 'none') {
       if (this.phase === 'end') {
         // keep celebrate/dejected
-      } else if (this.holder === a) c.setState('dribble');
-      else if (a.team !== this.possession && this.phase === 'live' && speed < 2.2 && this.holder && hdist(a.pos, this.holder.pos) < 4) c.setState('defense');
+      } else if (this.holder === a) c.setState(live ? 'dribble' : 'idleBall');
+      else if (a.team !== this.possession && (live || this.phase === 'inbound') && speed < 2.6 && hdist(a.pos, this.holder ? this.holder.pos : this.ball.pos) < 4) c.setState('defense');
       else if (speed > 0.6) c.setState('run');
       else c.setState('idle');
     }
-    c.handedness = 1;
+    // Ball hand and dribble-move body shaping.
+    const m = this.holder === a ? a.move : null;
+    c.handedness = a.ballHand;
+    c.switchFrom = null;
+    c.lean = 0;
+    c.twist = 0;
+    c.crouch = 0;
+    let spinOffset = 0;
+    if (m) {
+      const u = clamp(m.t / m.dur, 0, 1);
+      const arc = Math.sin(Math.PI * u);
+      if (m.from !== m.to) {
+        c.switchFrom = m.from;
+        c.handedness = m.from;
+        c.switchMix = u;
+      }
+      if (m.kind === 'cross') {
+        c.lean = (m.auto ? 0.06 : 0.24) * m.to * arc;
+        c.crouch = -0.05 * arc;
+      } else if (m.kind === 'legs') {
+        c.crouch = -0.11 * arc;
+        c.lean = 0.1 * m.to * arc;
+      } else if (m.kind === 'behind') {
+        c.twist = 0.45 * m.from * arc;
+        c.lean = 0.12 * m.to * arc;
+      } else if (m.kind === 'spin') {
+        spinOffset = m.spin * Math.PI * 2 * u * u * (3 - 2 * u);
+        c.crouch = -0.06 * arc;
+      } else if (m.kind === 'hesi') {
+        c.crouch = u < 0.42 ? 0.04 : -0.08 * Math.sin((Math.PI * (u - 0.42)) / 0.58);
+      } else {
+        c.crouch = -0.08 * arc;
+      }
+    }
+    // Backpedal: run the stride cycle in reverse when moving against the facing.
+    const fwd = a.vel.x * Math.sin(a.yaw) + a.vel.z * Math.cos(a.yaw);
+    c.strideDir = speed > 0.6 && fwd < -0.35 * speed ? -1 : 1;
     c.root.position.set(a.pos.x, 0, a.pos.z);
-    // Smooth facing.
-    let diff = a.facing - c.root.rotation.y;
+    let diff = a.facing - a.yaw;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-    c.root.rotation.y += diff * Math.min(1, dt * 12);
+    a.yaw += diff * Math.min(1, dt * 12);
+    c.root.rotation.y = a.yaw + spinOffset;
     c.update(dt, speed01);
+  }
+
+  /** Ball position while dribbling, including the path across the body during a hand switch. */
+  private dribbleBall(a: Athlete, out: THREE.Vector3, dt: number, live: boolean) {
+    const c = a.char;
+    const yaw = c.root.rotation.y;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const m = a.move;
+    if (m && m.from !== m.to) {
+      const u = clamp(m.t / m.dur, 0, 1);
+      const S = c.handWorld(this.tmpA, m.from > 0 ? 'r' : 'l');
+      const E = c.handWorld(this.tmpB, m.to > 0 ? 'r' : 'l');
+      // Where the ball hits the floor: in front (crossover), between the feet, or behind the body.
+      const fo = m.kind === 'cross' ? 0.42 : m.kind === 'legs' ? 0.02 : m.kind === 'behind' ? -0.34 : -0.15;
+      const Fx = a.pos.x + fx * fo;
+      const Fz = a.pos.z + fz * fo;
+      if (u < 0.5) {
+        const v = u / 0.5;
+        const top = Math.max(0.65, S.y - 0.05);
+        out.set(lerp(S.x, Fx, v), BALL_R + (top - BALL_R) * (1 - v * v), lerp(S.z, Fz, v));
+      } else {
+        const w = (u - 0.5) / 0.5;
+        const top = Math.max(0.65, E.y - 0.05);
+        out.set(lerp(Fx, E.x, w), BALL_R + (top - BALL_R) * (1 - (1 - w) * (1 - w)), lerp(Fz, E.z, w));
+      }
+      if (live && m.t - dt < m.dur * 0.5 && m.t >= m.dur * 0.5) audio.bounce(0.6);
+      return;
+    }
+    const hp = c.handWorld(this.tmpA, a.ballHand > 0 ? 'r' : 'l');
+    const ph = (c.dribblePhase / (Math.PI * 2)) % 1;
+    const bounce = Math.sin(ph * Math.PI);
+    const top = Math.max(0.7, hp.y - 0.05);
+    const ahead = a.vel.length() > 0.5 ? 0.22 : 0.1;
+    const px = hp.x + fx * ahead;
+    const pz = hp.z + fz * ahead;
+    // Keep the ball outside the hip on the dribbling side.
+    const side = this.handSide(yaw, this.tmpB);
+    const lat = (px - a.pos.x) * side.x + (pz - a.pos.z) * side.z;
+    const need = a.ballHand * 0.24 - lat;
+    const adj = a.ballHand > 0 ? Math.max(0, need) : Math.min(0, need);
+    out.set(px + side.x * adj, top - (top - BALL_R) * bounce, pz + side.z * adj);
+    if (ph < 0.52 && ph + (dt * 10.5) / (Math.PI * 2) >= 0.5 && live) audio.bounce(0.5);
   }
 
   // ---------------------------------------------------------------------------
@@ -1418,9 +1996,9 @@ export class Match {
     if (this.holder) {
       const a = this.holder;
       const act = a.action.type;
-      const hand = a.char.handWorld(this.tmp);
       if (act === 'shoot' || act === 'layup' || act === 'dunk' || act === 'pass') {
         // Ball in the hands (two-hand set point).
+        const hand = a.char.handWorld(this.tmp);
         const fx = Math.sin(a.facing);
         const fz = Math.cos(a.facing);
         const u = a.action.t / Math.max(0.01, a.action.releaseAt);
@@ -1432,20 +2010,12 @@ export class Match {
         } else {
           b.pos.set(hand.x, hand.y + 0.05, hand.z);
         }
-      } else {
-        // Dribble: ball bounces between the hand and the floor.
-        const ph = (a.char.dribblePhase / (Math.PI * 2)) % 1;
-        const bounce = Math.sin(ph * Math.PI);
-        const top = Math.max(0.7, hand.y - 0.05);
-        const fx = Math.sin(a.facing);
-        const fz = Math.cos(a.facing);
-        const moving = a.vel.length() > 0.5;
-        const sx = Math.cos(a.facing) * 0.32;
-        const sz = -Math.sin(a.facing) * 0.32;
-        b.pos.set(a.pos.x + fx * (moving ? 0.45 : 0.3) + sx, top - (top - BALL_R) * bounce, a.pos.z + fz * (moving ? 0.45 : 0.3) + sz);
-        if (ph < 0.52 && ph + dt * 10.5 / (Math.PI * 2) >= 0.5 && live) audio.bounce(0.5);
-      }
-      b.mode = 'dribble';
+      } else if (this.phase !== 'live') {
+        // Holding it for the throw-in.
+        const yaw = a.char.root.rotation.y;
+        b.pos.set(a.pos.x + Math.sin(yaw) * 0.34, 1.12, a.pos.z + Math.cos(yaw) * 0.34);
+      } else this.dribbleBall(a, b.pos, dt, live);
+      b.mode = this.phase === 'live' ? 'dribble' : 'held';
       b.vel.set(0, 0, 0);
       b.syncVisual();
       return;
@@ -1460,7 +2030,8 @@ export class Match {
         const d = hdist(o.pos, b.pos);
         if (d < 0.85 && b.pos.y < 2.3 && this.time - b.pass.launchedAt > 0.08) {
           const disruption = mods ? (o.team === 1 ? mods.oppSteal : mods.userSteal) : 1;
-          const rate = 0.55 * (o.def.ratings.steal / 80) * disruption * (o.action.type === 'steal' ? 3 : 1);
+          const styleK = b.pass.style === 'bounce' ? 0.55 : b.pass.style === 'lob' ? 0.6 : 1;
+          const rate = 0.55 * (o.def.ratings.steal / 80) * disruption * styleK * (o.action.type === 'steal' ? 3 : 1);
           if (this.rng.chance(1 - Math.exp(-rate * dt))) {
             o.stats.stl++;
             if (this.lastPasser) this.lastPasser.stats.to++;
@@ -1580,7 +2151,7 @@ export class Match {
       return;
     }
     const other: 0 | 1 = team === 0 ? 1 : 0;
-    this.startDead(1.2, { team: other, x: -this.attackDir(other) * (HALF_L - 1.2), z: this.rng.float(-1.5, 1.5), reason: 'score' });
+    this.prepareInbound(other, 0, this.ball.pos.z || this.rng.float(-1, 1), 'score', 1.0);
   }
 
   private outOfBounds() {
@@ -1588,9 +2159,7 @@ export class Match {
     const last = this.ball.lastTouchTeam;
     const team: 0 | 1 = last === 0 ? 1 : 0;
     this.events.push({ type: 'oob', team, text: 'OUT OF BOUNDS' });
-    const x = clamp(this.ball.pos.x, -HALF_L + 1, HALF_L - 1);
-    const z = Math.abs(this.ball.pos.z) > HALF_W ? Math.sign(this.ball.pos.z) * (HALF_W - 0.6) : clamp(this.ball.pos.z, -HALF_W + 1, HALF_W - 1);
-    this.startDead(1.2, { team, x, z, reason: 'oob' });
+    this.prepareInbound(team, this.ball.pos.x, this.ball.pos.z, 'oob', 1.2);
   }
 
   private processBallEvents(mods: ReturnType<Director['mods']> | null) {

@@ -144,14 +144,26 @@ export class Hud {
     } else this.feedbackEl.style.opacity = '0';
     // Control hints.
     const s = this.input.state;
-    const offense = match.possession === 0 && match.holder && match.holder.team === 0;
-    const pad = s.gamepadType;
-    const names = pad === 'ps' ? { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2' } : pad ? { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT' } : s.usingTouch ? null : { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT' };
-    if (names && match.opts.userControlled) {
-      this.hintEl.innerHTML = offense
-        ? `<b>${names.a}</b> Shoot (hold/release) · <b>${names.b}</b> Pass · <b>${names.x}</b> Crossover · <b>${names.sprint}</b> Sprint`
-        : `<b>${names.a}</b> Block / Rebound · <b>${names.x}</b> Steal · <b>${names.b}</b> Switch · <b>${names.sprint}</b> Sprint`;
-    } else this.hintEl.innerHTML = '';
+    const ib = match.inbound;
+    const inbounding = !!ib && match.phase !== 'live' && ib.manual && match.controlled === ib.inbounder;
+    const withBall = match.phase === 'live' && !!match.holder && match.holder === match.controlled;
+    const offense = match.possession === 0;
+    const pad = s.lastDevice === 'gamepad' ? s.gamepadType : null;
+    const names = pad === 'ps'
+      ? { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2', skill: 'R-STICK' }
+      : pad
+        ? { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT', skill: 'R-STICK' }
+        : s.usingTouch
+          ? null
+          : { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT', skill: 'ARROWS' };
+    let hint = '';
+    if (names && match.opts.userControlled && match.controlled) {
+      if (inbounding) hint = `<b>${names.b}</b> Inbound pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · aim with the stick`;
+      else if (withBall) hint = `<b>${names.a}</b> Shoot · <b>${names.b}</b> Pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · <b>${names.skill}</b> Dribble moves · <b>${names.sprint}</b> Sprint`;
+      else if (offense) hint = `<b>${names.b}</b> Call for the ball · <b>${names.sprint}</b> Sprint`;
+      else hint = `<b>${names.a}</b> Steal · <b>${names.y}</b> Block · <b>${names.b}</b> Switch · <b>${names.sprint}</b> Sprint`;
+    }
+    if (this.hintEl.innerHTML !== hint) this.hintEl.innerHTML = hint;
     // Career panel.
     if (match.opts.career && match.userAthlete) {
       const u = match.userAthlete;

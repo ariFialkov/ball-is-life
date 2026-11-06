@@ -60,6 +60,7 @@ export class ContestScene {
     this.arena.drawJumbotron({ abbr: 'ALL', score: 0, color: team.colors.primary }, { abbr: 'STAR', score: 0, color: team.colors.secondary }, strip.split('·')[0].trim(), 'ALL-STAR WEEKEND');
     const showTouch = app.mobile || (localStorage.getItem('ball-is-life:v1') ?? '').includes('"touch":"on"');
     app.touch.setVisible(showTouch);
+    app.touch.setSwipe(false);
   }
 
   addCharacter(def: PlayerDef, team: TeamDef, x: number, z: number): Character {

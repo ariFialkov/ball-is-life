@@ -8,7 +8,7 @@ import { audio } from '../engine/audio.ts';
 export function topbar(title: string, onBack: (() => void) | null, extra?: HTMLElement): HTMLElement {
   const left = h('div', { class: 'row' });
   if (onBack) {
-    const b = h('button', { class: 'btn small ghost' }, '‹ BACK');
+    const b = h('button', { class: 'btn small ghost', 'data-nav-back': '' }, '‹ BACK');
     b.onclick = () => {
       audio.click();
       onBack();
