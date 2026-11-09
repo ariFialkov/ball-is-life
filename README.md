@@ -80,7 +80,7 @@ Near the rim, Shoot triggers a layup or dunk automatically. On offense the contr
 - Vite + TypeScript + three.js. No external 3D assets: players are procedurally rigged primitives with analytic animation (idle, run, dribble, defense, jump shot, layup, dunk, pass, block, steal, celebrate) blended in real time; court, crests, jerseys and ball are canvas textures; crowd is an instanced mesh with a vertex-shader bob.
 - Ball physics: ballistic flight with rim (torus), backboard and floor collisions; scripted makes get a soft rim, scripted misses a realistic rattle-out.
 - 2K-style camera behind the offense (flips with possession) plus a broadcast camera and a cinematic multi-shot reel that plays an all-bot game behind the main menu with a film-grain/scanline/decal overlay.
-- PWA: `public/manifest.webmanifest` + `public/sw.js` (app-shell precache, stale-while-revalidate runtime cache, installable on iOS/Android/desktop). Fullscreen, safe-area aware, portrait and landscape.
+- PWA: `public/manifest.json` + `public/sw.js` (app-shell precache, stale-while-revalidate runtime cache, installable on iOS/Android/desktop). Fullscreen, safe-area aware, portrait and landscape.
 - Procedural WebAudio SFX (bounces, swish, rim, buzzer, crowd bed) with no audio files.
 
 ### Debug / test hooks

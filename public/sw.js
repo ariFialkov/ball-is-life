@@ -1,6 +1,6 @@
 /* Ball is Life service worker: app-shell precache + runtime caching so the PWA works offline. */
-const VERSION = 'bil-v1';
-const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
+const VERSION = 'bil-v2';
+const SHELL = ['./', './index.html', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
