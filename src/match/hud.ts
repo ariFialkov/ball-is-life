@@ -106,7 +106,7 @@ export class Hud {
       const t0 = match.opts.teams[0];
       const t1 = match.opts.teams[1];
       const color = e.team === 0 ? t0.colors.primary : t1.colors.primary;
-      if (e.type === 'score' || e.type === 'steal' || e.type === 'block' || e.type === 'dunk' || e.type === 'assist' || e.type === 'shotclock' || e.type === 'oob' || e.type === 'tip' || e.type === 'sub') {
+      if (e.type === 'score' || e.type === 'steal' || e.type === 'block' || e.type === 'dunk' || e.type === 'assist' || e.type === 'shotclock' || e.type === 'oob' || e.type === 'tip' || e.type === 'sub' || e.type === 'turnover') {
         if (e.text) this.toast(e.text, e.type === 'score' || e.type === 'dunk' || e.type === 'steal' || e.type === 'block' ? color : '#fff');
       }
       if (e.type === 'period') this.banner(e.text, 2.8);

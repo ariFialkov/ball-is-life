@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import { BACKBOARD_BOTTOM, BACKBOARD_H, BACKBOARD_W, BACKBOARD_X, BALL_R, GRAVITY, RIM_H, RIM_R, RIM_TUBE, RIM_X } from './constants.ts';
 
 export type BallMode = 'held' | 'dribble' | 'shot' | 'pass' | 'loose';
+/** Contest balls: regular, the red-white-blue money ball, and the deep 'starry' ball. */
+export type BallStyle = 'standard' | 'money' | 'starry';
+
+const textureCache: Partial<Record<BallStyle, THREE.Texture>> = {};
+/** Linear air drag (1/s), shared by the integrator and the launch solver. */
+const AIR_DRAG = 0.02;
 
 export interface BallEvent {
   type: 'rim' | 'backboard' | 'floor' | 'score' | 'net';
@@ -24,8 +30,9 @@ export class Ball {
   private shadow: THREE.Mesh;
   private lastFloorBounce = 0;
 
-  constructor() {
-    const tex = makeBallTexture();
+  constructor(style: BallStyle = 'standard') {
+    // No DOM (unit tests): physics only, no texture.
+    const tex = typeof document === 'undefined' ? null : (textureCache[style] ??= makeBallTexture(style));
     this.mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 24, 18), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.65, metalness: 0 }));
     this.mesh.castShadow = true;
     this.shadow = new THREE.Mesh(new THREE.CircleGeometry(BALL_R * 1.1, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
@@ -33,11 +40,11 @@ export class Ball {
     this.shadow.position.y = 0.01;
   }
 
-  addTo(scene: THREE.Scene) {
+  addTo(scene: THREE.Object3D) {
     scene.add(this.mesh, this.shadow);
   }
 
-  removeFrom(scene: THREE.Scene) {
+  removeFrom(scene: THREE.Object3D) {
     scene.remove(this.mesh, this.shadow);
   }
 
@@ -52,7 +59,11 @@ export class Ball {
     const dx = target.x - this.pos.x;
     const dy = target.y - this.pos.y;
     const dz = target.z - this.pos.z;
-    this.vel.set(dx / flightTime, (dy - 0.5 * GRAVITY * flightTime * flightTime) / flightTime, dz / flightTime);
+    // Solve with the same linear air drag the integrator applies, so the ball arrives exactly on target.
+    const k = AIR_DRAG;
+    const T = flightTime;
+    const f = k / (1 - Math.exp(-k * T));
+    this.vel.set(dx * f, (dy - (GRAVITY * T) / k) * f + GRAVITY / k, dz * f);
     this.spin.set(0, 0, 0);
   }
 
@@ -83,7 +94,7 @@ export class Ball {
     const prevX = p.x;
     v.y += GRAVITY * h;
     // Mild air drag.
-    v.multiplyScalar(1 - 0.02 * h);
+    v.multiplyScalar(1 - AIR_DRAG * h);
     p.addScaledVector(v, h);
 
     // Scoring check: crossing the rim plane downward inside the cylinder.
@@ -193,11 +204,12 @@ export class Ball {
   }
 }
 
-function makeBallTexture(): THREE.CanvasTexture {
+function makeBallTexture(style: BallStyle = 'standard'): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 512;
   c.height = 256;
   const ctx = c.getContext('2d')!;
+  if (style !== 'standard') return paintContestBall(c, ctx, style);
   ctx.fillStyle = '#d9641e';
   ctx.fillRect(0, 0, 512, 256);
   // Subtle pebble noise.
@@ -224,6 +236,47 @@ function makeBallTexture(): THREE.CanvasTexture {
   ctx.moveTo(320, 0);
   ctx.bezierCurveTo(396, 90, 396, 166, 320, 256);
   ctx.stroke();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Money ball (red, white and blue panels) and the deep 'starry' ball. */
+function paintContestBall(c: HTMLCanvasElement, ctx: CanvasRenderingContext2D, style: BallStyle): THREE.CanvasTexture {
+  if (style === 'money') {
+    const cols = ['#c8102e', '#f4f4f4', '#0b3a8c', '#f4f4f4'];
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = cols[i];
+      ctx.fillRect(i * 128, 0, 128, 256);
+    }
+  } else {
+    ctx.fillStyle = '#0b1e4a';
+    ctx.fillRect(0, 0, 512, 256);
+    ctx.fillStyle = '#ffd166';
+    for (let i = 0; i < 40; i++) {
+      const x = (i * 97) % 512;
+      const y = (i * 53) % 256;
+      ctx.beginPath();
+      for (let k = 0; k < 10; k++) {
+        const r = k % 2 ? 5 : 12;
+        const a = (k * Math.PI) / 5;
+        ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      }
+      ctx.fill();
+    }
+  }
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(0, 128);
+  ctx.lineTo(512, 128);
+  ctx.stroke();
+  for (const x of [0, 128, 256, 384]) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 256);
+    ctx.stroke();
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;

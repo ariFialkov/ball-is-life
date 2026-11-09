@@ -91,8 +91,7 @@ export class MenuNav {
   private scope(): Element | null {
     const dialogs = document.querySelectorAll<HTMLElement>('.dialog');
     if (dialogs.length) return dialogs[dialogs.length - 1];
-    const picker = document.querySelector<HTMLElement>('.dunk-picker');
-    if (picker && visible(picker)) return picker;
+    for (const picker of Array.from(document.querySelectorAll<HTMLElement>('.contest-picker, .dunk-picker'))) if (visible(picker)) return picker;
     return document.getElementById('ui');
   }
 

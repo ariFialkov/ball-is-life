@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { HALF_L, RIM_H, RIM_X } from './constants.ts';
 
-export type CameraMode = '2k' | 'broadcast' | 'cinematic' | 'showcase' | 'contest';
+export type CameraMode = '2k' | 'broadcast' | 'cinematic' | 'showcase' | 'contest' | 'manual';
 
 /** Smooth camera controller with 2K-style and broadcast framing. */
 export class CameraRig {
   mode: CameraMode = '2k';
   private pos = new THREE.Vector3(0, 8, 20);
+  /** Targets for 'manual' mode (set every frame by the All-Star contests). */
+  readonly manualPos = new THREE.Vector3(0, 4, 10);
+  readonly manualLook = new THREE.Vector3(0, 1, 0);
+  /** Smoothing rate for manual mode (higher = snappier). */
+  manualRate = 3.5;
   private look = new THREE.Vector3(0, 1, 0);
   private targetPos = new THREE.Vector3();
   private targetLook = new THREE.Vector3();
@@ -53,6 +58,10 @@ export class CameraRig {
         this.targetPos.set(focus.x + Math.sin(t * 0.12) * 2.5, 1.7, 6.4 + Math.cos(t * 0.1) * 0.6);
         this.targetLook.set(focus.x, 1.25, 0);
         break;
+      case 'manual':
+        this.targetPos.copy(this.manualPos);
+        this.targetLook.copy(this.manualLook);
+        break;
       case 'contest': {
         // Behind the shooter, framing both the player and the hoop.
         const rx = this.attackDir * RIM_X;
@@ -65,7 +74,7 @@ export class CameraRig {
         break;
       }
     }
-    const k = this.mode === 'cinematic' ? Math.min(1, dt * 1.6) : Math.min(1, dt * 4.5);
+    const k = this.mode === 'cinematic' ? Math.min(1, dt * 1.6) : this.mode === 'manual' ? Math.min(1, dt * this.manualRate) : Math.min(1, dt * 4.5);
     this.pos.lerp(this.targetPos, k);
     this.look.lerp(this.targetLook, Math.min(1, dt * 6));
     this.camera.position.copy(this.pos);

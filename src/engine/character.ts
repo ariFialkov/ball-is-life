@@ -107,6 +107,10 @@ export class Character {
   crouch = 0;
   /** -1 runs the stride cycle backwards, for backpedalling. */
   strideDir: 1 | -1 = 1;
+  /** Arm path for the 'dunk' state (the 360 and reverse are body rotations driven by the caller). */
+  dunkStyle: 'two' | 'tomahawk' | 'windmill' | 'legs' = 'two';
+  /** Scales the dunk leap (dunk-contest athletes get up higher than an in-game dunk). */
+  jumpBoost = 1;
 
   constructor(def: PlayerDef, kit: Kit, opts: { lowDetail?: boolean } = {}) {
     this.def = def;
@@ -405,7 +409,7 @@ export class Character {
         const dur = 1.1;
         const u = Math.min(1, t / dur);
         const jumpT = clamp01((u - 0.05) / 0.85);
-        p.jump = Math.sin(jumpT * Math.PI) * 0.85;
+        p.jump = Math.sin(jumpT * Math.PI) * 0.85 * this.jumpBoost;
         const reach = smooth(clamp01((u - 0.08) / 0.3));
         const slam = smooth(clamp01((u - 0.42) / 0.14));
         const armX = -0.7 - 2.5 * reach + 1.1 * slam;
@@ -421,6 +425,38 @@ export class Character {
         b.lKnee = [1.1 * reach + 0.2, 0, 0];
         b.spine = [0.3 - 0.25 * slam, 0, 0];
         b.head = [-0.4 * reach + 0.3 * slam, 0, 0];
+        if (this.dunkStyle === 'tomahawk') {
+          // One hand cocked behind the head, whipped up to full extension over the rim, then hammered down.
+          const cock = smooth(clamp01((u - 0.1) / 0.2)) * (1 - smooth(clamp01((u - 0.38) / 0.1)));
+          b[R] = [armX - 0.5 * cock, 0, -hand * 0.1];
+          b[RE] = [-1.9 * cock - 0.15 - 0.4 * slam, 0, 0];
+          b[RW] = [-0.9 * cock + 1.1 * slam, 0, 0];
+          b[L] = [-0.9, 0, hand * 0.7];
+          b[LE] = [-0.5, 0, 0];
+          b.spine = [0.1 - 0.35 * cock + 0.3 * slam, 0, 0];
+        } else if (this.dunkStyle === 'windmill') {
+          // The ball arm sweeps a full circle: forward, down, back, over the top and through.
+          const w = smooth(clamp01((u - 0.06) / 0.38));
+          b[R] = [-1.5 + 4.6 * w + 1.1 * slam, 0, -hand * 0.18];
+          b[RE] = [-0.1, 0, 0];
+          b[RW] = [0.2 + 0.8 * slam, 0, 0];
+          b[L] = [-1.0, 0, hand * 0.8];
+          b[LE] = [-0.6, 0, 0];
+          b.chest = [0, -hand * 0.35 * Math.sin(w * Math.PI), 0];
+        } else if (this.dunkStyle === 'legs') {
+          // Knees tuck high while the ball passes under them, then both hands come up to finish.
+          const under = Math.sin(Math.PI * clamp01((u - 0.1) / 0.32));
+          const up = smooth(clamp01((u - 0.36) / 0.12));
+          b.lHip = [-1.6 * under - 0.4 * up, 0, -0.35];
+          b.rHip = [-1.6 * under - 0.4 * up, 0, 0.35];
+          b.lKnee = [1.9 * under + 0.4, 0, 0];
+          b.rKnee = [1.9 * under + 0.4, 0, 0];
+          b.spine = [0.75 * under - 0.2 * up + 0.2 * slam, 0, 0];
+          b[R] = [-0.35 * (1 - up) - 3.0 * up + 1.1 * slam, 0, -hand * 0.15];
+          b[L] = [-0.35 * (1 - up) - 2.8 * up + 1.1 * slam, 0, hand * 0.15];
+          b[RE] = [-0.25 * (1 - up) - 0.1, 0, 0];
+          b[LE] = [-0.25 * (1 - up) - 0.1, 0, 0];
+        }
         break;
       }
       case 'pass': {

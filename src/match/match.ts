@@ -199,6 +199,14 @@ export class Match {
   /** Game and shot clocks stay stopped until the ball is touched inbounds. */
   clockHeld = true;
   private callForBall: { who: Athlete; at: number } | null = null;
+  /** The shoot button was pressed before the user's player had the ball: shoot on the catch while it is held. */
+  private shootArmed = false;
+  /** Who touched the ball last (decides out-of-bounds possession). */
+  lastToucher: Athlete | null = null;
+  /** The offense has had the ball in its frontcourt this possession (over-and-back applies). */
+  frontcourt = false;
+  /** Seconds the offense has spent getting the ball into the frontcourt (8-second rule). */
+  backcourtTime = 0;
   private userMoveDir = new THREE.Vector3();
   private userMoveMag = 0;
   private readonly tmpA = new THREE.Vector3();
@@ -405,8 +413,25 @@ export class Match {
     return opp.find((o) => o.slot % 5 === a.slot % 5) ?? opp[0] ?? null;
   }
 
+  /** Record a touch: whoever touches it last decides who gets an out-of-bounds ball. */
+  private touch(a: Athlete) {
+    this.ball.lastTouchTeam = a.team;
+    this.lastToucher = a;
+  }
+
+  /** The defense got a hand on it: the offense loses team control (backcourt rules reset). */
+  private defenseTouch(a: Athlete) {
+    this.touch(a);
+    if (a.team !== this.possession) {
+      this.frontcourt = false;
+      this.backcourtTime = 0;
+    }
+  }
+
   giveBall(a: Athlete) {
     if (this.possession !== a.team) {
+      this.frontcourt = false;
+      this.backcourtTime = 0;
       // Change of possession: everyone reacts with a small, individual delay.
       for (const x of this.athletes) x.reactAt = this.time + this.rng.float(0.08, 0.4);
     }
@@ -417,7 +442,7 @@ export class Match {
     this.ball.mode = 'dribble';
     this.ball.shot = null;
     this.ball.pass = null;
-    this.ball.lastTouchTeam = a.team;
+    this.touch(a);
     a.lastCatch = this.time;
     a.driving = false;
     a.move = null;
@@ -517,6 +542,9 @@ export class Match {
     this.clockHeld = true;
     this.shotClock = 24;
     this.callForBall = null;
+    this.frontcourt = false;
+    this.backcourtTime = 0;
+    this.shootArmed = false;
     for (const a of this.athletes) {
       a.driving = false;
       a.cutting = false;
@@ -572,7 +600,7 @@ export class Match {
     this.ball.mode = 'held';
     this.ball.shot = null;
     this.ball.pass = null;
-    this.ball.lastTouchTeam = ib.team;
+    this.touch(inb);
     this.clockHeld = true;
   }
 
@@ -940,6 +968,7 @@ export class Match {
     }
     this.separate();
     for (const a of this.athletes) if (a.onCourt) this.clampInside(a);
+    if (this.phase === 'live' && !this.clockHeld) this.backcourtRules(dt);
     // A ball handler who steps on or over the line turns it over.
     if (this.phase === 'live' && this.holder) {
       const h = this.holder;
@@ -1041,8 +1070,11 @@ export class Match {
     if (this.phase !== 'live') return;
     const hasBall = this.holder === a;
     if (hasBall) {
-      // Shoot: hold & release.
-      if (s.pressed.a && a.action.type === 'none') {
+      // Shoot: hold & release. Holding it from before the catch shoots on the catch.
+      const catchAndShoot = s.held.a && this.shootArmed;
+      if ((s.pressed.a || catchAndShoot) && (a.action.type === 'none' || a.action.type === 'catch')) {
+        this.shootArmed = false;
+        if (catchAndShoot) this.events.push({ type: 'tip', team: a.team, text: 'CATCH & SHOOT' });
         const b = this.basket(a.team, this.tmp3);
         const d = Math.hypot(b.x - a.pos.x, b.z - a.pos.z);
         const toward = (b.x - a.pos.x) * Math.sin(a.facing) + (b.z - a.pos.z) * Math.cos(a.facing) > 0;
@@ -1071,6 +1103,8 @@ export class Match {
         this.startDribbleMove(a, this.moveFromFlick(a, w), mods);
       }
     } else if (a.team === this.possession) {
+      // Shoot pressed before the ball arrives: arm a catch-and-shoot.
+      if (s.pressed.a) this.shootArmed = true;
       if (s.pressed.b) {
         this.callForBall = { who: a, at: this.time };
         this.events.push({ type: 'tip', team: a.team, text: 'CALLING FOR IT' });
@@ -1080,6 +1114,7 @@ export class Match {
       if (s.pressed.y && a.action.type === 'none' && a.cooldown <= 0) this.startAction(a, 'block');
       if (s.pressed.b) this.switchControlled();
     }
+    if (!s.held.a) this.shootArmed = false;
     if (this.shotMeter.active) this.shotMeter.t += dt;
   }
 
@@ -1360,7 +1395,8 @@ export class Match {
     for (const m of this.teammates(a)) {
       const d = hdist(a.pos, m.pos);
       if (d < 1.0 || d > 20) continue;
-      // Never pass to a teammate standing out of bounds.
+      // Never pass to a teammate standing out of bounds, or back over half court once across it.
+      if (this.frontcourt && this.phase === 'live' && this.attackDir(a.team) * m.pos.x < 0.4) continue;
       if (Math.abs(m.pos.x) > HALF_L - 0.3 || Math.abs(m.pos.z) > HALF_W - 0.3) continue;
       const { dist: open } = this.nearestOpponent(m);
       const toBasket = Math.hypot(basket.x - m.pos.x, basket.z - m.pos.z);
@@ -1627,6 +1663,7 @@ export class Match {
     let willMake = this.rng.chance(p);
     // Blocks: a contesting defender mid-jump can swat it.
     let blocked = false;
+    let blocker: Athlete | null = null;
     for (const o of this.opponents(a)) {
       if (o.action.type === 'block' && o.action.t > 0.08 && o.action.t < 0.6 && hdist(o.pos, a.pos) < 1.45) {
         const disruption = mods ? (o.team === 1 ? mods.oppSteal : mods.userSteal) : 1;
@@ -1634,6 +1671,7 @@ export class Match {
         if (quality > 0.9) pb *= 0.3;
         if (this.rng.chance(clamp(pb, 0.02, 0.95))) {
           blocked = true;
+          blocker = o;
           willMake = false;
           o.stats.blk++;
           this.events.push({ type: 'block', team: o.team, text: `${o.def.last.toUpperCase()} WITH THE BLOCK!`, athlete: o });
@@ -1651,7 +1689,11 @@ export class Match {
     this.holder = null;
     const hand = a.char.handWorld(this.tmp);
     this.ball.pos.set(hand.x, Math.max(hand.y, 1.6 + a.char.airHeight), hand.z);
-    this.ball.lastTouchTeam = a.team;
+    this.touch(a);
+    // A shot ends team control: an offensive rebound may come back across half court.
+    this.frontcourt = false;
+    this.backcourtTime = 0;
+    if (blocked && blocker) this.defenseTouch(blocker);
     if (blocked) {
       this.ball.mode = 'loose';
       this.ball.shot = null;
@@ -1731,7 +1773,7 @@ export class Match {
       this.ball.launchTo(fp, flight * 0.56);
     } else this.ball.launchTo(lead, flight);
     this.ball.mode = 'pass';
-    this.ball.lastTouchTeam = a.team;
+    this.touch(a);
     this.ball.pass = { fromTeam: a.team, fromIndex: a.slot, toIndex: target.slot, launchedAt: this.time, style };
     this.lastPasser = a;
     this.lastPassTime = this.time;
@@ -1763,10 +1805,31 @@ export class Match {
       this.giveBall(a);
       a.action.type = 'none';
       this.shotClock = 24;
+      this.defenseTouch(a);
       this.crowdLevel = 0.7;
       audio.cheer(0.5);
       this.pickControlled();
+    } else if (this.rng.chance(clamp(0.3 * (a.def.ratings.steal / 80), 0.05, 0.5))) {
+      // Got a hand on it without securing it: the ball squirts loose off the defender.
+      this.pokeLoose(a, h);
     }
+  }
+
+  /** A defender knocks the ball away from the handler: loose ball, last touched by the defense. */
+  private pokeLoose(d: Athlete, h: Athlete) {
+    this.holder = null;
+    h.move = null;
+    h.char.setState('idle');
+    const away = this.tmp.set(h.pos.x - d.pos.x, 0, h.pos.z - d.pos.z).normalize();
+    const lateral = this.rng.float(-1, 1);
+    this.ball.pos.set(h.pos.x + away.x * 0.4, 0.9, h.pos.z + away.z * 0.4);
+    this.ball.vel.set(away.x * 3.2 - away.z * lateral * 2, 1.6, away.z * 3.2 + away.x * lateral * 2);
+    this.ball.mode = 'loose';
+    this.ball.shot = null;
+    this.ball.pass = null;
+    this.defenseTouch(d);
+    this.events.push({ type: 'tip', team: d.team, text: `${d.def.last.toUpperCase()} POKES IT LOOSE` });
+    this.crowdLevel = 0.6;
   }
 
   private shotClockViolation() {
@@ -1797,6 +1860,11 @@ export class Match {
     }
     const inMove = this.stepMove(a, dt);
     if (!inMove && !userDriven && !frozen && act !== 'layup' && act !== 'dunk') {
+      // An AI ball handler with frontcourt status never heads back over half court.
+      if (this.holder === a && this.frontcourt && this.phase === 'live') {
+        const dirA = this.attackDir(a.team);
+        if (dirA * a.target.x < 1.0) a.target.x = dirA * 1.0;
+      }
       // Steer toward target.
       const dx = a.target.x - a.pos.x;
       const dz = a.target.z - a.pos.z;
@@ -1835,6 +1903,12 @@ export class Match {
    * inside it. Only a sustained, hard push straight at the line breaks through.
    */
   private applyBoundary(a: Athlete, dt: number, user: boolean) {
+    if (!user && this.holder === a && this.frontcourt && this.phase === 'live') {
+      const dirA = this.attackDir(a.team);
+      const p = dirA * a.pos.x;
+      const vBack = -dirA * a.vel.x;
+      if (p < 1.2 && vBack > 0) a.vel.x = -dirA * vBack * clamp((p - 0.2) / 1.0, 0, 1);
+    }
     const edgeX = HALF_L - Math.abs(a.pos.x);
     const edgeZ = HALF_W - Math.abs(a.pos.z);
     const minEdge = Math.min(edgeX, edgeZ);
@@ -1867,6 +1941,40 @@ export class Match {
     if (!walled || a.breakout) return;
     a.pos.x = clamp(a.pos.x, -(HALF_L - EDGE), HALF_L - EDGE);
     a.pos.z = clamp(a.pos.z, -(HALF_W - EDGE), HALF_W - EDGE);
+  }
+
+  /**
+   * Over-and-back and the 8-second rule. The offense gets frontcourt status
+   * once the ball handler is past the half-court line; after that, the ball
+   * going back to its backcourt under its own control is a violation. A shot
+   * or a defensive touch ends team control and resets both rules.
+   */
+  private backcourtRules(dt: number) {
+    const team = this.possession;
+    const dir = this.attackDir(team);
+    const h = this.holder;
+    const controlled = (h && h.team === team) || (this.ball.mode === 'pass' && this.ball.pass?.fromTeam === team);
+    if (!controlled) return;
+    if (h && h.team === team) {
+      const p = dir * h.pos.x;
+      if (!this.frontcourt && p > 0.05) this.frontcourt = true;
+      else if (this.frontcourt && p < -0.05) {
+        this.violation(h, 'BACKCOURT VIOLATION');
+        return;
+      }
+    }
+    if (!this.frontcourt) {
+      this.backcourtTime += dt;
+      if (this.backcourtTime > 8 && h && h.team === team) this.violation(h, '8-SECOND VIOLATION');
+    }
+  }
+
+  private violation(h: Athlete, text: string) {
+    audio.whistle();
+    h.stats.to++;
+    this.events.push({ type: 'turnover', team: h.team, text });
+    const other: 0 | 1 = h.team === 0 ? 1 : 0;
+    this.prepareInbound(other, h.pos.x, h.pos.z, 'violation', 1.3);
   }
 
   private holderOutOfBounds(h: Athlete) {
@@ -2046,6 +2154,15 @@ export class Match {
           const disruption = mods ? (o.team === 1 ? mods.oppSteal : mods.userSteal) : 1;
           const styleK = b.pass.style === 'bounce' ? 0.55 : b.pass.style === 'lob' ? 0.6 : 1;
           const rate = 0.55 * (o.def.ratings.steal / 80) * disruption * styleK * (o.action.type === 'steal' ? 3 : 1);
+          if (d < 0.6 && this.rng.chance(1 - Math.exp(-rate * 1.4 * dt))) {
+            // Tipped, not caught: the pass is deflected and now belongs to nobody.
+            b.vel.set(b.vel.x * -0.25 + this.rng.float(-2.5, 2.5), Math.abs(b.vel.y) * 0.4 + 1.2, b.vel.z * -0.25 + this.rng.float(-2.5, 2.5));
+            b.mode = 'loose';
+            b.pass = null;
+            this.defenseTouch(o);
+            this.events.push({ type: 'tip', team: o.team, text: `DEFLECTED BY ${o.def.last.toUpperCase()}` });
+            return;
+          }
           if (this.rng.chance(1 - Math.exp(-rate * dt))) {
             o.stats.stl++;
             if (this.lastPasser) this.lastPasser.stats.to++;
@@ -2101,7 +2218,17 @@ export class Match {
       for (const x of list) {
         let p = 0.55 * (x.def.ratings.reb / 80);
         if (mods) p *= x.team === 1 ? mods.oppReb : 1 / mods.oppReb;
-        if (this.rng.chance(clamp(p, 0.05, 0.98)) || list.length === 1) {
+        if (!(this.rng.chance(clamp(p, 0.05, 0.98)) || list.length === 1)) {
+          if (hdist(x.pos, b.pos) < 0.55 && b.vel.length() > 1.5 && this.rng.chance(0.3)) {
+            // Fumbled: it goes off their hands.
+            b.vel.set(b.vel.x * 0.4 + this.rng.float(-2, 2), Math.max(0.8, b.vel.y), b.vel.z * 0.4 + this.rng.float(-2, 2));
+            if (x.team !== this.possession) this.defenseTouch(x);
+            else this.touch(x);
+            break;
+          }
+          continue;
+        }
+        {
           const wasShot = this.lastShotMissedAt > this.time - 4;
           if (wasShot) {
             x.stats.reb++;
@@ -2172,7 +2299,8 @@ export class Match {
     audio.whistle();
     const last = this.ball.lastTouchTeam;
     const team: 0 | 1 = last === 0 ? 1 : 0;
-    this.events.push({ type: 'oob', team, text: 'OUT OF BOUNDS' });
+    const off = this.lastToucher && this.lastToucher.team === last ? ` OFF ${this.lastToucher.def.last.toUpperCase()}` : '';
+    this.events.push({ type: 'oob', team, text: `OUT${off} · ${this.opts.teams[team].abbr} BALL` });
     this.prepareInbound(team, this.ball.pos.x, this.ball.pos.z, 'oob', 1.2);
   }
 
