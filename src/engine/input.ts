@@ -10,6 +10,7 @@
  *   x = Circle / B   (right face)   Offense: bounce pass
  *   y = Triangle / Y (top face)     Offense: lob pass       Defense: block / rebound
  *   sprint = R2 / RT
+ *   pick = L1 / LB / F   With the ball: call a screen. Off the ball, standing still: set one.
  *
  * Dribble moves come from the "skill stick": the right stick on a controller,
  * the arrow keys on a keyboard, and a swipe on the right side of a touch screen.
@@ -18,7 +19,7 @@
  * Menus read `nav` (D-pad / left stick / arrow keys, Cross or A or Enter to
  * select, Circle or B or Escape to go back), with auto-repeat on directions.
  */
-export type Action = 'a' | 'b' | 'x' | 'y' | 'sprint' | 'pause' | 'confirm' | 'back';
+export type Action = 'a' | 'b' | 'x' | 'y' | 'sprint' | 'pick' | 'pause' | 'confirm' | 'back';
 export type Device = 'keyboard' | 'mouse' | 'gamepad' | 'touch';
 
 export interface NavState {
@@ -62,6 +63,7 @@ const KEYMAP: Record<string, Action | Dir> = {
   KeyL: 'x',
   KeyR: 'y',
   KeyI: 'y',
+  KeyF: 'pick',
   ShiftLeft: 'sprint',
   ShiftRight: 'sprint',
   Escape: 'pause',
@@ -77,7 +79,7 @@ const ARROWS: Record<string, [number, number]> = {
   ArrowRight: [1, 0],
 };
 
-const ACTIONS: Action[] = ['a', 'b', 'x', 'y', 'sprint', 'pause', 'confirm', 'back'];
+const ACTIONS: Action[] = ['a', 'b', 'x', 'y', 'sprint', 'pick', 'pause', 'confirm', 'back'];
 
 /** True while the user is typing into a text field (keyboard shortcuts stand down). */
 export function isTyping(): boolean {
@@ -263,6 +265,7 @@ export class Input {
       if (b(1)) held.x = true;
       if (b(3)) held.y = true;
       if (b(7) || (pad.buttons[7]?.value ?? 0) > 0.25) held.sprint = true;
+      if (b(4)) held.pick = true; // L1 / LB: set or call a screen
       if (b(9)) held.pause = true;
       // Menu navigation: D-pad, left stick, Cross/A select, Circle/B back.
       if (b(12)) navDir = 'up';
@@ -338,7 +341,7 @@ export class Input {
 }
 
 function emptyActions(): Record<Action, boolean> {
-  return { a: false, b: false, x: false, y: false, sprint: false, pause: false, confirm: false, back: false };
+  return { a: false, b: false, x: false, y: false, sprint: false, pick: false, pause: false, confirm: false, back: false };
 }
 
 function emptyNav(): NavState {
@@ -353,7 +356,7 @@ export class TouchControls {
   private swipe: HTMLElement;
   private stickId: number | null = null;
   private stickOrigin = { x: 0, y: 0 };
-  private labels: Record<'a' | 'b' | 'x' | 'y', HTMLElement> = {} as any;
+  private labels: Record<'a' | 'b' | 'x' | 'y' | 'pick', HTMLElement> = {} as any;
 
   constructor(private input: Input, root: HTMLElement) {
     this.el = document.createElement('div');
@@ -366,6 +369,7 @@ export class TouchControls {
         <button class="tc-btn tc-x" data-a="x">SPRINT</button>
         <button class="tc-btn tc-b" data-a="b">PASS</button>
         <button class="tc-btn tc-a" data-a="a">SHOOT</button>
+        <button class="tc-btn tc-pick" data-a="pick">SCREEN</button>
       </div>`;
     root.appendChild(this.el);
     this.stick = this.el.querySelector('.tc-stick')!;
@@ -428,7 +432,7 @@ export class TouchControls {
     });
     this.swipe.addEventListener('pointercancel', (e) => swipes.delete(e.pointerId));
     for (const btn of Array.from(this.el.querySelectorAll<HTMLButtonElement>('.tc-btn'))) {
-      const a = btn.dataset.a as 'a' | 'b' | 'x' | 'y';
+      const a = btn.dataset.a as 'a' | 'b' | 'x' | 'y' | 'pick';
       this.labels[a] = btn;
       // The right-hand top button is a sprint hold on touch.
       const action: Action = a === 'x' ? 'sprint' : a;
@@ -449,10 +453,11 @@ export class TouchControls {
     }
   }
 
-  setLabels(l: { a: string; b: string; x: string; y: string }) {
-    for (const k of ['a', 'b', 'x', 'y'] as const) {
-      if (this.labels[k].textContent !== l[k]) this.labels[k].textContent = l[k];
-      this.labels[k].style.visibility = l[k] ? '' : 'hidden';
+  setLabels(l: { a: string; b: string; x: string; y: string; pick?: string }) {
+    const all = { ...l, pick: l.pick ?? '' };
+    for (const k of ['a', 'b', 'x', 'y', 'pick'] as const) {
+      if (this.labels[k].textContent !== all[k]) this.labels[k].textContent = all[k];
+      this.labels[k].style.visibility = all[k] ? '' : 'hidden';
     }
   }
 

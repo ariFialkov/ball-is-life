@@ -10,15 +10,51 @@ export interface Settings {
   quality: 'auto' | 'low' | 'high';
 }
 
+export interface CareerGameLog {
+  pts: number;
+  ast: number;
+  reb: number;
+  stl: number;
+  blk: number;
+  fgm: number;
+  fga: number;
+  tpm: number;
+  tpa: number;
+  to: number;
+  /** Share of regulation on the floor. */
+  min: number;
+  grade: number;
+  bonus: number;
+  win: boolean;
+  score: [number, number];
+  opp: string;
+  notes: string[];
+  injured?: boolean;
+}
+
+export interface CareerEventLog {
+  afterGame: number;
+  title: string;
+  text: string;
+  /** Money this event adds (+) or forfeits (-), in bet multiples. */
+  amount: number;
+}
+
 export interface CareerSave {
   ticket: RoundTicket;
   playerName: string;
+  first: string;
+  last: string;
   pos: Position;
   teamId: string;
   gamesPlayed: number;
-  /** Per game actual stat lines */
-  log: { pts: number; ast: number; reb: number; grade: number; bonus: number; win: boolean; score: [number, number] }[];
+  log: CareerGameLog[];
+  /** Earned so far: incentives plus event money (bet multiples). */
   earned: number;
+  /** Next game's share of the minutes (follows performance). */
+  minutes: number;
+  events: CareerEventLog[];
+  midEventDone: boolean;
 }
 
 export interface PlayoffSave {
@@ -43,6 +79,8 @@ export interface SaveData {
   favTeam: string;
   clientSeed: string;
   playerName: string;
+  playerFirst: string;
+  playerLast: string;
 }
 
 const KEY = 'ball-is-life:v1';
@@ -61,6 +99,8 @@ function defaults(): SaveData {
     favTeam: 'cap',
     clientSeed: Math.random().toString(36).slice(2, 10),
     playerName: '',
+    playerFirst: '',
+    playerLast: '',
   };
 }
 

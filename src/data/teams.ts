@@ -30,6 +30,8 @@ export interface PlayerDef {
   skin: number;
   /** 0..3 hair style */
   hair: number;
+  /** Brothers share facial traits: the id whose look this player borrows. */
+  look?: string;
   age: number;
   ratings: Ratings;
 }
@@ -101,12 +103,38 @@ const TEAM_SEEDS: TeamSeed[] = [
   { id: 'atl', city: 'Atlantic', name: 'Admirals', abbr: 'ATL', primary: '#0b2545', secondary: '#ffffff', accent: '#d62839', motif: 'anchor', arena: 'Harborfront Coliseum', capacity: 20400, style: 'balanced', ovr: 84 },
 ];
 
+// Large pools so names across the league are (almost) all distinct.
 const FIRST = [
-  'Marcus', 'Jalen', 'DeAndre', 'Tyrese', 'Kai', 'Luka', 'Nikola', 'Darius', 'Andre', 'Malik', 'Jaylen', 'Devin', 'Trey', 'Zion', 'Cade', 'Evan', 'Isaiah', 'Jordan', 'Chris', 'Anthony', 'Donovan', 'Bam', 'Kyrie', 'Jamal', 'Victor', 'Scoot', 'Paolo', 'Franz', 'Dejounte', 'Keegan', 'Tari', 'Bennedict', 'Jabari', 'Jaden', 'Ausar', 'Amen', 'Brandon', 'Cam', 'Desmond', 'Immanuel', 'Lonzo', 'Miles', 'Obi', 'Rui', 'Shai', 'Terance', 'Walker', 'Xavier', 'Yves', 'Zach',
+  'Marcus', 'Jalen', 'DeAndre', 'Tyrese', 'Kai', 'Luka', 'Nikola', 'Darius', 'Andre', 'Malik', 'Jaylen', 'Devin', 'Trey', 'Zion', 'Cade',
+  'Evan', 'Isaiah', 'Jordan', 'Chris', 'Anthony', 'Donovan', 'Bam', 'Kyrie', 'Jamal', 'Victor', 'Scoot', 'Paolo', 'Franz', 'Dejounte', 'Keegan',
+  'Tari', 'Bennedict', 'Jabari', 'Jaden', 'Ausar', 'Amen', 'Brandon', 'Cam', 'Desmond', 'Immanuel', 'Lonzo', 'Miles', 'Obi', 'Rui', 'Shai',
+  'Terance', 'Walker', 'Xavier', 'Yves', 'Zach', 'Aaron', 'Bilal', 'Caleb', 'Dante', 'Elijah', 'Fred', 'Gabe', 'Hakeem', 'Ivan', 'Jarrett',
+  'Kendrick', 'Lamar', 'Mateo', 'Nolan', 'Omari', 'Pascal', 'Quentin', 'Reggie', 'Santiago', 'Tobias', 'Ulysses', 'Vince', 'Wendell', 'Yusuf', 'Zaire',
+  'Adrian', 'Bryce', 'Corey', 'Damian', 'Emeka', 'Felix', 'Grant', 'Hassan', 'Isaac', 'Jonah', 'Kobe', 'Lars', 'Mason', 'Nate', 'Oscar',
+  'Percy', 'Rashad', 'Sekou', 'Tyler', 'Uche', 'Vlatko', 'Wade', 'Xander', 'Yannick', 'Zeke', 'Alonzo', 'Boris', 'Cedric', 'Dwayne', 'Elias',
+  'Frankie', 'Gideon', 'Hunter', 'Ime', 'Javon', 'Keon', 'Leon', 'Moses', 'Nnamdi', 'Orlando', 'Pierce', 'Quincy', 'Ronan', 'Silas', 'Terrell',
+  'Uriah', 'Vernon', 'Wesley', 'Yasir', 'Zoran', 'Ahmad', 'Bogdan', 'Cormac', 'Dariq', 'Ennis', 'Fabian', 'Garrison', 'Hollis', 'Isiah', 'Jett',
+  'Khalil', 'Luis', 'Markell', 'Niko', 'Ochai', 'Pablo', 'Rasheed', 'Sasha', 'Thaddeus', 'Udoka', 'Vashon', 'Wilder', 'Yohan', 'Zavier', 'Amari',
+  'Bol', 'Cason', 'Dyson', 'Eric', 'Finn', 'Goran', 'Harlan', 'Iggy', 'Jerome', 'Kawhi', 'Lindell', 'Mikal', 'Nassir', 'Onyeka', 'Patrice',
+  'Royce', 'Stephon', 'Tremaine', 'Victor', 'Warrick', 'Yuki', 'Zeller',
 ];
 const LAST = [
-  'Carter', 'Brooks', 'Hayes', 'Rivers', 'Okafor', 'Banks', 'Mitchell', 'Reed', 'Dawson', 'Holloway', 'Pierce', 'Vance', 'Sutton', 'Graves', 'Lincoln', 'Monroe', 'Delgado', 'Fontaine', 'Abara', 'Kovac', 'Larsson', 'Mbeki', 'Nakamura', 'Ortega', 'Petrov', 'Quinn', 'Rashad', 'Silva', 'Tanaka', 'Umoh', 'Vega', 'Whitfield', 'Xu', 'Young', 'Zeller', 'Bridges', 'Cole', 'Dunn', 'Ellis', 'Foster', 'Grant', 'Hughes', 'Irving', 'Jones', 'King', 'Lowe', 'Morgan', 'Nash', 'Owens', 'Price',
+  'Carter', 'Brooks', 'Hayes', 'Rivers', 'Okafor', 'Banks', 'Mitchell', 'Reed', 'Dawson', 'Holloway', 'Pierce', 'Vance', 'Sutton', 'Graves', 'Lincoln',
+  'Monroe', 'Delgado', 'Fontaine', 'Abara', 'Kovac', 'Larsson', 'Mbeki', 'Nakamura', 'Ortega', 'Petrov', 'Quinn', 'Rashad', 'Silva', 'Tanaka', 'Umoh',
+  'Vega', 'Whitfield', 'Xu', 'Young', 'Zeller', 'Bridges', 'Cole', 'Dunn', 'Ellis', 'Foster', 'Grant', 'Hughes', 'Irving', 'Jones', 'King',
+  'Lowe', 'Morgan', 'Nash', 'Owens', 'Price', 'Adebayo', 'Barnett', 'Castillo', 'Diallo', 'Eaton', 'Fairbanks', 'Gallagher', 'Haddad', 'Iwundu', 'Jovanovic',
+  'Kessler', 'Lindqvist', 'Marchetti', 'Nwosu', 'Oyelaran', 'Pacheco', 'Ramsey', 'Sandoval', 'Thibodeaux', 'Underwood', 'Valdez', 'Wainwright', 'Yamamoto', 'Zubac', 'Ashford',
+  'Bellamy', 'Crenshaw', 'Darby', 'Ekwueme', 'Faulkner', 'Gibbs', 'Hargrove', 'Ingram', 'Jeffries', 'Kincaid', 'Lockhart', 'Mayfield', 'Ndiaye', 'Osei', 'Prescott',
+  'Redmond', 'Sinclair', 'Tolliver', 'Uzoma', 'Vickers', 'Whitaker', 'Yancey', 'Zimmerman', 'Alexander', 'Blackwell', 'Coleman', 'Drummond', 'Easley', 'Fleming', 'Garland',
+  'Hollins', 'Iverson', 'Jackson', 'Kellerman', 'Langford', 'Merriweather', 'Northcutt', 'Oakes', 'Pennington', 'Rollins', 'Strickland', 'Thornton', 'Upshaw', 'Vasquez', 'Westbrook',
+  'Yeboah', 'Zawadi', 'Arceneaux', 'Bertrand', 'Chukwu', 'Dorsey', 'Etienne', 'Ferreira', 'Goodwin', 'Holbrook', 'Ilunga', 'Jessup', 'Kamara', 'Lutz', 'Mensah',
+  'Navarro', 'Okoro', 'Pruitt', 'Ridley', 'Sabonis', 'Toure', 'Udeh', 'Vukovic', 'Winslow', 'Yildiz', 'Zielinski', 'Abernathy', 'Bonner', 'Calloway', 'Dixon',
+  'Embry', 'Fitzgerald', 'Gaines', 'Harrell', 'Imani', 'Jennings', 'Kirkland', 'Ledbetter', 'Mosley', 'Nunez', 'Odom', 'Pippen', 'Robb', 'Stokes', 'Tatum',
+  'Uribe', 'Valentine', 'Wiggins', 'Yorke', 'Zander', 'Amadi', 'Bayless', 'Cunningham', 'Dellavedova', 'Edey', 'Forbes', 'Gobert', 'Hale', 'Ibaka', 'Jokubaitis',
+  'Kuzma', 'Lofton', 'Mathurin', 'Nesmith', 'Oturu', 'Poole', 'Reaves', 'Sengun', 'Thybulle', 'Ujiri', 'Vucevic', 'Wembley', 'Yurtseven', 'Zamora', 'Asante',
+  'Burke', 'Cissoko', 'Dosunmu', 'Eason', 'Flagler', 'Giddey', 'Hield', 'Isaacs', 'Jaquez', 'Kispert', 'Liddell', 'Murray', 'Nembhard', 'Onuaku', 'Pritchard',
 ];
+
 
 const POS_TEMPLATE: Position[] = ['PG', 'SG', 'SF', 'PF', 'C', 'PG', 'SG', 'SF', 'PF', 'C', 'SG', 'SF', 'PF'];
 
@@ -215,7 +243,44 @@ export function isLight(hex: string): boolean {
   return (r * 299 + g * 587 + b * 114) / 1000 > 150;
 }
 
-export const TEAMS: TeamDef[] = TEAM_SEEDS.map(buildTeam);
+export const TEAMS: TeamDef[] = assignNames(TEAM_SEEDS.map(buildTeam));
+
+/**
+ * League-wide names: every player gets a distinct first and last name, then
+ * a couple of first names repeat (rare) and two pairs of brothers share a
+ * surname (rarer). Brothers look alike: same skin tone, hair, facial traits
+ * and a similar build.
+ */
+function assignNames(teams: TeamDef[]): TeamDef[] {
+  const rng = new Rng('league-names-v2');
+  const firsts = rng.shuffle([...new Set(FIRST)]);
+  const lasts = rng.shuffle([...new Set(LAST)]);
+  const all = teams.flatMap((t) => t.roster);
+  all.forEach((p, i) => {
+    p.first = firsts[i % firsts.length];
+    p.last = lasts[i % lasts.length];
+  });
+  // Two shared first names.
+  for (let k = 0; k < 2; k++) {
+    const a = all[rng.int(0, all.length - 1)];
+    const b = all[rng.int(0, all.length - 1)];
+    if (a !== b) b.first = a.first;
+  }
+  // Two pairs of brothers on different teams.
+  for (let k = 0; k < 2; k++) {
+    const t1 = teams[(k * 5 + 1) % teams.length];
+    const t2 = teams[(k * 5 + 7) % teams.length];
+    const a = t1.roster[2 + k * 3];
+    const b = t2.roster[3 + k * 4];
+    b.last = a.last;
+    b.skin = a.skin;
+    b.hair = a.hair;
+    b.look = a.id;
+    b.height = Math.round((a.height + (rng.next() - 0.5) * 0.06) * 100) / 100;
+  }
+  for (const p of all) p.name = `${p.first} ${p.last}`;
+  return teams;
+}
 
 export function teamById(id: string): TeamDef {
   const t = TEAMS.find((x) => x.id === id);
@@ -224,14 +289,14 @@ export function teamById(id: string): TeamDef {
 }
 
 /** The rookie the player controls in career mode. */
-export function makeCareerPlayer(name: string, pos: Position): PlayerDef {
+export function makeCareerPlayer(first: string, last: string, pos: Position): PlayerDef {
+  const name = `${first} ${last}`.trim();
   const rng = new Rng(`career:${name}`);
   const ratings = makeRatings(rng, pos, 74, 'balanced');
-  const parts = name.trim().split(/\s+/);
   return {
     id: 'you',
-    first: parts[0] ?? 'Rookie',
-    last: parts.slice(1).join(' ') || 'Prospect',
+    first,
+    last,
     name,
     number: 1,
     pos,

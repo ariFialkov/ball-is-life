@@ -24,7 +24,7 @@ export class Ball {
   mode: BallMode = 'loose';
   /** Set when a shot is in the air: which basket (side) it is aimed at and whether it is scripted to go in. */
   shot: { side: 1 | -1; willMake: boolean; shooterTeam: number; shooterIndex: number; value: 2 | 3; releasedAt: number; scored: boolean; touchedRim: boolean } | null = null;
-  pass: { fromTeam: number; fromIndex: number; toIndex: number; launchedAt: number; style?: 'chest' | 'bounce' | 'lob' } | null = null;
+  pass: { fromTeam: number; fromIndex: number; toIndex: number; launchedAt: number; style?: 'chest' | 'bounce' | 'lob'; flight?: number } | null = null;
   events: BallEvent[] = [];
   lastTouchTeam = -1;
   private shadow: THREE.Mesh;

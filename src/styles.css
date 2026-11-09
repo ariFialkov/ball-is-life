@@ -243,3 +243,9 @@ input[type=text], select { background: rgba(0,0,0,0.4); border: 1px solid var(--
   .tp-ball.starry { width: 12px; height: 12px; }
   .judge-card { width: 34px; height: 46px; font-size: 22px; }
 }
+
+.tc-pick { right: 192px; bottom: 30px; width: 60px; height: 60px; font-size: 11px; background: rgba(60, 120, 255, 0.4); }
+
+.career-event { max-width: 620px; text-align: center; display: flex; flex-direction: column; gap: 10px; }
+.career-event p { font-size: 15px; line-height: 1.5; margin: 0; }
+.career-event .choice { justify-content: center; }

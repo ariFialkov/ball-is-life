@@ -18,7 +18,8 @@ export type AnimState =
   | 'steal'
   | 'celebrate'
   | 'dejected'
-  | 'catch';
+  | 'catch'
+  | 'screen';
 
 /**
  * Pose channels. `spine` and `head` are the authored bends; at apply time they
@@ -539,6 +540,21 @@ export class Character {
         b.lKnee = [0.9, 0, 0];
         b.rKnee = [0.9, 0, 0];
         p.hipsY = -0.18;
+        break;
+      }
+      case 'screen': {
+        // Setting a pick: wide, low base, arms crossed over the chest, braced for contact.
+        b.lHip = [-0.28, 0, -0.32];
+        b.rHip = [-0.28, 0, 0.32];
+        b.lKnee = [0.5, 0, 0];
+        b.rKnee = [0.5, 0, 0];
+        b.spine = [0.12, 0, 0];
+        b.head = [0.05, 0, 0];
+        b.lShoulder = [-1.0, 0.5, -0.35];
+        b.rShoulder = [-1.0, -0.5, 0.35];
+        b.lElbow = [-1.75, 0, 0];
+        b.rElbow = [-1.75, 0, 0];
+        p.hipsY = -0.09;
         break;
       }
       case 'catch': {

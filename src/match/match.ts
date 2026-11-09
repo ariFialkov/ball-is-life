@@ -119,6 +119,22 @@ export interface Athlete {
   breakout: boolean;
   /** Reaction delay after a change of possession, so players do not all move in lockstep. */
   reactAt: number;
+  /** Ball screen: going to set it (spot), set until a time, or reading it afterwards. */
+  screen: ScreenState | null;
+}
+
+type ScreenRead = 'roll' | 'pop' | 'clear';
+
+interface ScreenState {
+  phase: 'going' | 'set' | 'read';
+  /** Who the screen is for (the ball handler). */
+  for: Athlete | null;
+  spot: THREE.Vector3;
+  until: number;
+  used: boolean;
+  read: ScreenRead | null;
+  /** Set by the user (they control when it ends). */
+  manual: boolean;
 }
 
 export interface MatchEvent {
@@ -131,10 +147,9 @@ export interface MatchEvent {
 
 export interface CareerOptions {
   player: PlayerDef;
-  targetPoints: number;
-  targetAssists: number;
-  targetRebounds: number;
   minutesShare: number;
+  /** A freak injury after this many seconds on the floor (the career ends mid-game). */
+  injuryAfter?: number;
 }
 
 export interface MatchOptions {
@@ -219,6 +234,9 @@ export class Match {
   /** Career: whether the user's player is on the floor. */
   userOnCourt = false;
   userAthlete: Athlete | null = null;
+  /** Career: seconds of live play the user's player has been on the floor. */
+  userOnCourtTime = 0;
+  userInjured = false;
   private benchedStarter: Athlete | null = null;
   private momentPlan: { start: number; end: number }[] = [];
   fastForwarding = false;
@@ -238,7 +256,7 @@ export class Match {
     this.opts = opts;
     this.rng = new Rng(opts.seed ?? `match:${Date.now()}`);
     this.clock = opts.quarterLength;
-    this.director = opts.script ? new Director(opts.script, opts.career ? { targetPoints: opts.career.targetPoints, targetAssists: opts.career.targetAssists, targetRebounds: opts.career.targetRebounds } : null, opts.quarterLength) : null;
+    this.director = opts.script ? new Director(opts.script, null, opts.quarterLength) : null;
     const home = opts.teams[opts.homeIndex];
     const away = opts.teams[opts.homeIndex === 0 ? 1 : 0];
     this.arena = new Arena({ homeTeam: home, awayTeam: away, mobile: opts.mobile });
@@ -301,6 +319,7 @@ export class Match {
       oobPush: 0,
       breakout: false,
       reactAt: 0,
+      screen: null,
     };
   }
 
@@ -408,9 +427,19 @@ export class Match {
     else this.defenseTarget(a, this.holder ? this.holder.pos : this.ball.pos, a.target);
   }
 
+  /** Defender -> offensive player overrides (switches off screens), cleared on a change of possession. */
+  private switches = new Map<Athlete, Athlete>();
+
   matchup(a: Athlete): Athlete | null {
+    const sw = this.switches.get(a);
+    if (sw && sw.onCourt) return sw;
     const opp = this.opponents(a);
     return opp.find((o) => o.slot % 5 === a.slot % 5) ?? opp[0] ?? null;
+  }
+
+  /** Who is guarding this offensive player right now. */
+  private defenderOf(man: Athlete): Athlete | null {
+    return this.opponents(man).find((d) => this.matchup(d) === man) ?? null;
   }
 
   /** Record a touch: whoever touches it last decides who gets an out-of-bounds ball. */
@@ -433,7 +462,11 @@ export class Match {
       this.frontcourt = false;
       this.backcourtTime = 0;
       // Change of possession: everyone reacts with a small, individual delay.
-      for (const x of this.athletes) x.reactAt = this.time + this.rng.float(0.08, 0.4);
+      for (const x of this.athletes) {
+        x.reactAt = this.time + this.rng.float(0.08, 0.4);
+        x.screen = null;
+      }
+      this.switches.clear();
     }
     this.holder = a;
     this.possession = a.team;
@@ -545,7 +578,9 @@ export class Match {
     this.frontcourt = false;
     this.backcourtTime = 0;
     this.shootArmed = false;
+    this.switches.clear();
     for (const a of this.athletes) {
+      a.screen = null;
       a.driving = false;
       a.cutting = false;
       a.move = null;
@@ -765,7 +800,7 @@ export class Match {
   private planMoments() {
     const c = this.opts.career!;
     const total = this.regulation;
-    const share = clamp(c.minutesShare, 0.15, 0.8);
+    const share = clamp(c.minutesShare, 0.15, 0.9);
     const n = share > 0.55 ? 4 : 3;
     const each = (total * share) / n;
     const gap = (total - total * share) / (n + 1);
@@ -843,6 +878,15 @@ export class Match {
     this.holder = null;
     for (const a of this.athletes) if (a.onCourt) this.resetAthlete(a);
     this.prepareInbound(team, 0, this.rng.chance(0.5) ? 2 : -2, 'sub', 0.8, true);
+  }
+
+  /** Career: the user's player goes down and does not return. */
+  injureUser() {
+    if (!this.userAthlete) return;
+    this.userInjured = true;
+    this.momentPlan = [];
+    this.events.push({ type: 'tip', team: 0, text: `INJURY · ${this.userAthlete.def.last.toUpperCase()} IS DOWN` });
+    this.subUserOut();
   }
 
   subUserIn() {
@@ -969,6 +1013,12 @@ export class Match {
     this.separate();
     for (const a of this.athletes) if (a.onCourt) this.clampInside(a);
     if (this.phase === 'live' && !this.clockHeld) this.backcourtRules(dt);
+    // Career: playing time, and the freak injury when the career calls for one.
+    if (this.userOnCourt && this.phase === 'live' && !this.clockHeld) {
+      this.userOnCourtTime += dt;
+      const at = this.opts.career?.injuryAfter;
+      if (at !== undefined && !this.userInjured && this.userOnCourtTime >= at && this.holder !== this.userAthlete) this.injureUser();
+    }
     // A ball handler who steps on or over the line turns it over.
     if (this.phase === 'live' && this.holder) {
       const h = this.holder;
@@ -1009,7 +1059,7 @@ export class Match {
   private careerFraction() {
     // Fraction of the user's planned floor time that has been consumed.
     const c = this.opts.career!;
-    const total = this.regulation * clamp(c.minutesShare, 0.15, 0.8);
+    const total = this.regulation * clamp(c.minutesShare, 0.15, 0.9);
     let played = 0;
     for (const m of this.momentPlan) played += clamp(this.elapsed - m.start, 0, m.end - m.start);
     return clamp(played / total, 0.02, 1);
@@ -1056,7 +1106,8 @@ export class Match {
       return;
     }
     const busy = a.action.type !== 'none' && a.action.type !== 'catch';
-    if (!busy && !(a.move && !a.move.auto)) {
+    const planted = a.screen?.phase === 'set';
+    if (!busy && !planted && !(a.move && !a.move.auto)) {
       const speed = this.maxSpeed(a) * mag;
       a.target.copy(a.pos).addScaledVector(dir, 2);
       const desired = this.tmp2.copy(dir).multiplyScalar(speed);
@@ -1096,6 +1147,8 @@ export class Match {
         const target = this.pickPassTarget(a, mag > 0.2 ? dir : null, mods);
         if (target) this.startPass(a, target, style);
       }
+      // L1 / LB / F with the ball: call a teammate over to set a screen.
+      if (s.pressed.pick) this.callScreen(a);
       // Skill stick: dribble moves read relative to the way the player faces.
       if (s.flick && a.action.type === 'none' && (!a.move || a.move.auto) && a.cooldown <= 0) {
         const w = cam.moveToWorld(s.flick.x, s.flick.y, this.tmpA);
@@ -1103,6 +1156,14 @@ export class Match {
         this.startDribbleMove(a, this.moveFromFlick(a, w), mods);
       }
     } else if (a.team === this.possession) {
+      // L1 / LB / F off the ball, standing still: set a screen right here (held while the button is held).
+      if (s.pressed.pick && a.vel.length() < 1.6 && a.action.type === 'none') this.setScreen(a, null, true);
+      if (a.screen?.manual && a.screen.phase === 'set') {
+        a.vel.set(0, 0, 0);
+        if (!s.held.pick || this.time > a.screen.until) this.releaseScreen(a);
+      }
+      // Triangle off the ball: go up for a rebound / tip.
+      if (s.pressed.y && a.action.type === 'none' && a.cooldown <= 0 && this.ball.mode === 'loose') this.startAction(a, 'block');
       // Shoot pressed before the ball arrives: arm a catch-and-shoot.
       if (s.pressed.a) this.shootArmed = true;
       if (s.pressed.b) {
@@ -1214,6 +1275,10 @@ export class Match {
   private aiOffense(a: Athlete, dt: number, mods: ReturnType<Director['mods']> | null, myForce: boolean, theirForce: boolean) {
     const basket = this.basket(a.team, this.tmp3);
     const isHandler = this.holder === a;
+    if (!isHandler && a.screen) {
+      this.aiScreener(a, dt);
+      return;
+    }
     if (!isHandler) {
       const ref = this.holder ? this.holder.pos : this.ball.pos;
       const dirA = this.attackDir(a.team);
@@ -1244,6 +1309,12 @@ export class Match {
     // Ball handler.
     if (a.action.type !== 'none' && a.action.type !== 'catch') return;
     if (a.move && !a.move.auto) return;
+    // Come off a teammate's ball screen (theirs or the user's).
+    const scr = this.teammates(a).find((m) => m.screen?.phase === 'set' && hdist(m.pos, a.pos) < 4.2);
+    if (scr) {
+      this.useScreen(a, scr);
+      return;
+    }
     // A teammate (the user, in career mode) calling for the ball.
     const call = this.callForBall;
     if (call && call.who.onCourt && call.who.team === a.team && call.who !== a && this.time - call.at < 1.3 && a.action.type === 'none') {
@@ -1314,7 +1385,13 @@ export class Match {
       this.startAction(a, 'shoot');
       return;
     }
-    // 4. Drive.
+    // 4. Pick and roll: a pressured handler (or the start of a set) calls a big up for a ball screen.
+    const screenOn = this.teammates(a).some((m) => m.screen);
+    if (!screenOn && this.shotClock > 8 && timeHeld > 0.6 && d > 5.5 && (openness < 1.7 || this.shotClock > 18) && this.rng.chance(0.3)) {
+      this.callScreen(a);
+      return;
+    }
+    // 5. Drive.
     const lane = this.laneOpen(a, basket);
     if ((lane || openness > 1.1) && this.rng.chance((lane ? 0.35 : 0.12) + r.handle / 300 + (needScore ? 0.3 : 0)) && timeHeld > 0.25) {
       a.driving = true;
@@ -1326,7 +1403,7 @@ export class Match {
       this.startPass(a, target);
       return;
     }
-    // 6. Probe: dribble to a new spot.
+    // 7. Probe: dribble to a new spot.
     const dir = this.attackDir(a.team);
     const spot = this.spotWorld(a.team, a.slot, this.tmp);
     a.target.set(spot.x + dir * this.rng.float(-1.5, 2.5), 0, spot.z + this.rng.float(-2.5, 2.5));
@@ -1402,6 +1479,7 @@ export class Match {
       const toBasket = Math.hypot(basket.x - m.pos.x, basket.z - m.pos.z);
       let score = open * 0.6 - toBasket * 0.08 - d * 0.05 + this.rng.next() * 0.6;
       if (m.cutting) score += 0.8;
+      if (m.screen?.phase === 'read' && m.screen.read !== 'clear') score += 1.3;
       if (stickDir) {
         const vx = (m.pos.x - a.pos.x) / d;
         const vz = (m.pos.z - a.pos.z) / d;
@@ -1754,8 +1832,11 @@ export class Match {
     const hand = a.char.handWorld(this.tmp);
     this.ball.pos.set(hand.x, Math.max(1.2, hand.y), hand.z);
     const d = hdist(a.pos, target.pos);
-    const flight = style === 'lob' ? clamp(0.6 + d / 15, 0.75, 1.45) : style === 'bounce' ? clamp(d / 11, 0.32, 1.15) : clamp(d / 13, 0.25, 1.1);
-    const lead = this.tmp2.copy(target.pos).addScaledVector(target.vel, flight * 0.85);
+    // Lead the receiver: solve where they will be when a pass thrown at this speed gets there.
+    const speed = style === 'lob' ? 9 : style === 'bounce' ? 10.5 : 13;
+    const meet = interceptTime(this.ball.pos, target.pos, target.vel, speed);
+    const flight = style === 'lob' ? clamp(0.6 + (meet * speed) / 15, 0.75, 1.5) : clamp(meet, 0.25, 1.3);
+    const lead = this.tmp2.copy(target.pos).addScaledVector(target.vel, flight);
     lead.x = clamp(lead.x, -HALF_L + 0.3, HALF_L - 0.3);
     lead.z = clamp(lead.z, -HALF_W + 0.3, HALF_W - 0.3);
     lead.y = style === 'lob' ? 2.1 : 1.35;
@@ -1774,7 +1855,7 @@ export class Match {
     } else this.ball.launchTo(lead, flight);
     this.ball.mode = 'pass';
     this.touch(a);
-    this.ball.pass = { fromTeam: a.team, fromIndex: a.slot, toIndex: target.slot, launchedAt: this.time, style };
+    this.ball.pass = { fromTeam: a.team, fromIndex: a.slot, toIndex: target.slot, launchedAt: this.time, style, flight };
     this.lastPasser = a;
     this.lastPassTime = this.time;
     this.possession = a.team;
@@ -1859,7 +1940,9 @@ export class Match {
       return;
     }
     const inMove = this.stepMove(a, dt);
-    if (!inMove && !userDriven && !frozen && act !== 'layup' && act !== 'dunk') {
+    if (a.screen?.phase === 'set') {
+      a.vel.set(0, 0, 0);
+    } else if (!inMove && !userDriven && !frozen && act !== 'layup' && act !== 'dunk') {
       // An AI ball handler with frontcourt status never heads back over half court.
       if (this.holder === a && this.frontcourt && this.phase === 'live') {
         const dirA = this.attackDir(a.team);
@@ -1977,6 +2060,149 @@ export class Match {
     this.prepareInbound(other, h.pos.x, h.pos.z, 'violation', 1.3);
   }
 
+  // ---------------------------------------------------------------------------
+  // Pick and roll
+
+  /** The ball handler calls for a ball screen: the best nearby big comes to set it on their defender. */
+  callScreen(handler: Athlete) {
+    if (this.phase !== 'live' || this.holder !== handler) return;
+    if (this.teammates(handler).some((m) => m.screen && m.screen.phase !== 'read')) return;
+    const def = this.defenderOf(handler);
+    if (!def) return;
+    const cands = this.teammates(handler).filter((m) => m !== this.controlled || this.autopilot === 'ai');
+    if (!cands.length) return;
+    const bigness = (m: Athlete) => (m.def.pos === 'C' ? 3 : m.def.pos === 'PF' ? 2 : 0) - hdist(m.pos, handler.pos) * 0.3;
+    const screener = cands.sort((x, y) => bigness(y) - bigness(x))[0];
+    // Set it on the defender's hip, on the side toward the middle of the floor.
+    const toMid = handler.pos.z > 0 ? -1 : 1;
+    const spot = new THREE.Vector3(def.pos.x, 0, def.pos.z + toMid * 0.75);
+    spot.x = clamp(spot.x, -HALF_L + 1, HALF_L - 1);
+    spot.z = clamp(spot.z, -HALF_W + 1, HALF_W - 1);
+    screener.screen = { phase: 'going', for: handler, spot, until: this.time + 3.5, used: false, read: null, manual: false };
+    screener.cutting = false;
+    if (handler === this.controlled) this.events.push({ type: 'tip', team: handler.team, text: `${screener.def.last.toUpperCase()} COMING TO SET THE PICK` });
+  }
+
+  /** Plant a screen where the player stands. */
+  setScreen(a: Athlete, forWho: Athlete | null, manual: boolean) {
+    a.screen = { phase: 'set', for: forWho, spot: a.pos.clone(), until: this.time + (manual ? 4 : 2.2), used: false, read: null, manual };
+    a.vel.set(0, 0, 0);
+    a.char.setState('screen');
+  }
+
+  private releaseScreen(a: Athlete) {
+    a.screen = null;
+    if (a.char.state === 'screen') a.char.setState('idle');
+  }
+
+  /** Someone ran into a set screen. */
+  private screenContact(screener: Athlete, other: Athlete) {
+    const sc = screener.screen!;
+    if (other.team === screener.team || other.stunned > 0) return;
+    // A defender chasing through it gets hung up on the screen.
+    if (other.vel.length() > 0.8) {
+      other.stunned = 0.55;
+      other.vel.multiplyScalar(0.2);
+      sc.used = true;
+    }
+  }
+
+  /** AI ball handler coming off a set screen: go around the screener's shoulder toward the rim. */
+  private useScreen(h: Athlete, screener: Athlete) {
+    const sc = screener.screen!;
+    const dir = this.attackDir(h.team);
+    const side = Math.sign(screener.pos.z - h.pos.z) || 1;
+    // Around the far shoulder, then downhill.
+    h.target.set(screener.pos.x + dir * 1.4, 0, screener.pos.z + side * 1.1);
+    h.sprint = true;
+    h.decisionTimer = 0.3;
+    if (hdist(h.pos, screener.pos) < 1.7 && h.vel.length() > 1.5) {
+      sc.used = true;
+      // Off the screen: sometimes keep driving.
+      if (!h.driving && this.rng.chance(0.45)) h.driving = true;
+    }
+  }
+
+  /**
+   * AI screener: get to the spot, hold the screen, then read it. Bigs who can
+   * finish usually roll to the rim; shooters pop out for a jumper; otherwise
+   * (or when the lane is already crowded) clear out to a spot.
+   */
+  private aiScreener(a: Athlete, dt: number) {
+    const sc = a.screen!;
+    const h = this.holder;
+    if (!h || h.team !== a.team || sc.until < this.time - 6) {
+      this.releaseScreen(a);
+      return;
+    }
+    const dirA = this.attackDir(a.team);
+    if (sc.phase === 'going') {
+      const def = sc.for ? this.defenderOf(sc.for) : null;
+      if (def && sc.for) {
+        const toMid = sc.for.pos.z > 0 ? -1 : 1;
+        sc.spot.set(def.pos.x - dirA * 0.15, 0, def.pos.z + toMid * 0.75);
+      }
+      a.target.copy(sc.spot);
+      a.sprint = hdist(a.pos, sc.spot) > 3;
+      if (hdist(a.pos, sc.spot) < 0.45 || this.time > sc.until) this.setScreen(a, sc.for, false);
+      return;
+    }
+    if (sc.phase === 'set') {
+      a.target.copy(a.pos);
+      const passed = sc.for && hdist(sc.for.pos, a.pos) < 1.6 && sc.for.vel.length() > 1.5;
+      if (passed) sc.used = true;
+      if ((sc.used && (!sc.for || hdist(sc.for.pos, a.pos) > 1.8)) || this.time > sc.until) this.readScreen(a);
+      return;
+    }
+    // Reading it: roll, pop or clear.
+    const basket = this.basket(a.team, this.tmp3);
+    if (sc.read === 'roll') {
+      a.target.set(basket.x - dirA * 1.7, 0, clamp(a.pos.z * 0.3, -1.2, 1.2));
+      a.sprint = true;
+      a.cutting = true;
+    } else if (sc.read === 'pop') {
+      a.target.set(basket.x - dirA * 7.6, 0, clamp(a.pos.z, -4, 4));
+      a.sprint = true;
+    } else {
+      this.spotWorld(a.team, a.slot, a.target);
+      a.target.z = a.target.z > 0 ? Math.max(a.target.z, 4.5) : Math.min(a.target.z, -4.5);
+    }
+    if (hdist(a.pos, a.target) < 0.6 && this.time > sc.until) {
+      a.cutting = false;
+      a.screen = null;
+    }
+    void dt;
+  }
+
+  private readScreen(a: Athlete) {
+    const sc = a.screen!;
+    a.char.setState('idle');
+    const r = a.def.ratings;
+    // Situational read: a hedge or a switch opens the roll; a crowded lane or a good shooter says pop.
+    const def = this.defenderOf(a);
+    const handler = sc.for;
+    const hedged = !!def && !!handler && hdist(def.pos, handler.pos) < hdist(def.pos, a.pos);
+    const basket = this.basket(a.team, this.tmp3);
+    const crowded = this.opponents(a).filter((o) => Math.hypot(o.pos.x - basket.x, o.pos.z) < 3.2).length >= 2;
+    let roll = (a.def.pos === 'C' || a.def.pos === 'PF' ? 0.55 : 0.25) + (r.inside - 70) / 200 + (hedged ? 0.25 : 0) - (crowded ? 0.3 : 0);
+    let pop = (r.three >= 72 ? 0.45 : 0.12) + (crowded ? 0.2 : 0);
+    roll = Math.max(0.05, roll);
+    pop = Math.max(0.05, pop);
+    const x = this.rng.next() * (roll + pop + 0.25);
+    sc.read = x < roll ? 'roll' : x < roll + pop ? 'pop' : 'clear';
+    sc.phase = 'read';
+    sc.until = this.time + 2.8;
+    // The defense sometimes switches the screen.
+    if (sc.used && def && handler) {
+      const hDef = this.defenderOf(handler);
+      if (hDef && hDef !== def && this.rng.chance(0.35)) {
+        this.switches.set(hDef, a);
+        this.switches.set(def, handler);
+      }
+    }
+    if (handler === this.controlled) this.events.push({ type: 'tip', team: a.team, text: `${a.def.last.toUpperCase()} ${sc.read === 'roll' ? 'ROLLS TO THE RIM' : sc.read === 'pop' ? 'POPS OUT' : 'CLEARS OUT'}` });
+  }
+
   private holderOutOfBounds(h: Athlete) {
     audio.whistle();
     h.stats.to++;
@@ -1996,13 +2222,18 @@ export class Match {
         const dz = b.pos.z - a.pos.z;
         const d = Math.hypot(dx, dz);
         if (d < minD && d > 1e-4) {
-          const push = (minD - d) / 2;
           const nx = dx / d;
           const nz = dz / d;
-          a.pos.x -= nx * push;
-          a.pos.z -= nz * push;
-          b.pos.x += nx * push;
-          b.pos.z += nz * push;
+          const aSet = a.screen?.phase === 'set';
+          const bSet = b.screen?.phase === 'set';
+          // A planted screener does not move; whoever runs into them takes all of it.
+          const wa = aSet && !bSet ? 0 : bSet && !aSet ? 1 : 0.5;
+          const push = minD - d;
+          a.pos.x -= nx * push * wa;
+          a.pos.z -= nz * push * wa;
+          b.pos.x += nx * push * (1 - wa);
+          b.pos.z += nz * push * (1 - wa);
+          if (aSet !== bSet) this.screenContact(aSet ? a : b, aSet ? b : a);
         }
       }
     }
@@ -2017,7 +2248,8 @@ export class Match {
     if (act === 'none') {
       if (this.phase === 'end') {
         // keep celebrate/dejected
-      } else if (this.holder === a) c.setState(live ? 'dribble' : 'idleBall');
+      } else if (a.screen?.phase === 'set') c.setState('screen');
+      else if (this.holder === a) c.setState(live ? 'dribble' : 'idleBall');
       else if (a.team !== this.possession && (live || this.phase === 'inbound') && speed < 2.6 && hdist(a.pos, this.holder ? this.holder.pos : this.ball.pos) < 4) c.setState('defense');
       else if (speed > 0.6) c.setState('run');
       else c.setState('idle');
@@ -2176,7 +2408,18 @@ export class Match {
           }
         }
       }
-      if (receiver && hdist(receiver.pos, b.pos) < 1.0 && b.pos.y < 2.5 && this.time - b.pass.launchedAt > 0.1) {
+      // A good pass keeps leading the receiver as they move (a gentle correction, never a curveball).
+      if (receiver && b.pass.style !== 'bounce') {
+        const left = Math.max(0.1, (b.pass.flight ?? 0.6) - (this.time - b.pass.launchedAt));
+        const wantX = (receiver.pos.x + receiver.vel.x * left - b.pos.x) / left;
+        const wantZ = (receiver.pos.z + receiver.vel.z * left - b.pos.z) / left;
+        const maxDv = 7 * dt;
+        b.vel.x += clamp(wantX - b.vel.x, -maxDv, maxDv);
+        b.vel.z += clamp(wantZ - b.vel.z, -maxDv, maxDv);
+      }
+      // The user's player gets 2K-style catch assist: a little more reach on passes meant for them.
+      const reach = receiver && receiver === this.controlled ? 1.45 : 1.0;
+      if (receiver && hdist(receiver.pos, b.pos) < reach && b.pos.y < (reach > 1 ? 2.8 : 2.5) && this.time - b.pass.launchedAt > 0.1) {
         this.catchBall(receiver);
         return;
       }
@@ -2213,11 +2456,21 @@ export class Match {
         return;
       }
       // Grab.
-      const list = this.athletes.filter((x) => x.onCourt && hdist(x.pos, b.pos) < 0.75 && b.pos.y < 2.35 + (x.action.type === 'block' ? 0.5 : 0));
-      list.sort((x, y) => hdist(x.pos, b.pos) - hdist(y.pos, b.pos));
+      // Reach depends on size and on jumping for it; the user's player gets a little catch assist.
+      const user = this.opts.userControlled && !this.autopilot ? this.controlled : null;
+      const reachOf = (x: Athlete) => 0.72 + Math.max(0, x.def.height - 1.9) * 0.9 + (x.action.type === 'block' ? 0.3 : 0) + (x === user ? 0.35 : 0);
+      const topOf = (x: Athlete) => 2.35 + (x.def.height - 2.0) * 0.6 + (x.action.type === 'block' ? 0.55 : 0) + (x === user ? 0.15 : 0);
+      const list = this.athletes.filter((x) => x.onCourt && hdist(x.pos, b.pos) < reachOf(x) && b.pos.y < topOf(x));
+      // The user's player gets first claim when the ball is in reach; then nearest first.
+      list.sort((x, y) => (x === user ? -1 : y === user ? 1 : hdist(x.pos, b.pos) - hdist(y.pos, b.pos)));
       for (const x of list) {
         let p = 0.55 * (x.def.ratings.reb / 80);
-        if (mods) p *= x.team === 1 ? mods.oppReb : 1 / mods.oppReb;
+        if (x === user) p = Math.max(0.82, p);
+        else {
+          // The director's thumb is only on the bots; and a bot the user has sealed behind them rarely gets it.
+          if (mods) p *= x.team === 1 ? mods.oppReb : 1 / mods.oppReb;
+          if (user && user.team !== x.team && hdist(user.pos, b.pos) < hdist(x.pos, b.pos) && hdist(user.pos, x.pos) < 1.3) p *= 0.45;
+        }
         if (!(this.rng.chance(clamp(p, 0.05, 0.98)) || list.length === 1)) {
           if (hdist(x.pos, b.pos) < 0.55 && b.vel.length() > 1.5 && this.rng.chance(0.3)) {
             // Fumbled: it goes off their hands.
@@ -2325,6 +2578,23 @@ export class Match {
   get finished() {
     return this.phase === 'end' && this.phaseTimer <= 0;
   }
+}
+
+/** Time for a projectile at `speed` from `from` to meet a target at `pos` moving with `vel` (on the floor plane). */
+export function interceptTime(from: THREE.Vector3, pos: THREE.Vector3, vel: THREE.Vector3, speed: number): number {
+  const px = pos.x - from.x;
+  const pz = pos.z - from.z;
+  const a = vel.x * vel.x + vel.z * vel.z - speed * speed;
+  const b = 2 * (vel.x * px + vel.z * pz);
+  const c = px * px + pz * pz;
+  const direct = Math.sqrt(c) / speed;
+  if (Math.abs(a) < 1e-6) return b < 0 ? -c / b : direct;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return direct;
+  const r1 = (-b - Math.sqrt(disc)) / (2 * a);
+  const r2 = (-b + Math.sqrt(disc)) / (2 * a);
+  const t = Math.min(...[r1, r2].filter((x) => x > 0));
+  return Number.isFinite(t) ? t : direct;
 }
 
 export function hdist(a: THREE.Vector3, b: THREE.Vector3) {

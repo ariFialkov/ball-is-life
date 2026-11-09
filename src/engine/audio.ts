@@ -2,8 +2,6 @@
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private crowdGain: GainNode | null = null;
-  private crowdTarget = 0.08;
   enabled = true;
 
   private ensure() {
@@ -13,7 +11,6 @@ export class AudioEngine {
         this.master = this.ctx.createGain();
         this.master.gain.value = 0.6;
         this.master.connect(this.ctx.destination);
-        this.startCrowd();
       } catch {
         this.enabled = false;
       }
@@ -32,46 +29,46 @@ export class AudioEngine {
     if (this.master) this.master.gain.value = v ? 0.6 : 0;
   }
 
-  private startCrowd() {
-    const ctx = this.ctx!;
-    const bufferSize = ctx.sampleRate * 2;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < bufferSize; i++) {
-      const white = Math.random() * 2 - 1;
-      last = (last + 0.02 * white) / 1.02;
-      data[i] = last * 3.5;
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.loop = true;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 600;
-    filter.Q.value = 0.5;
-    this.crowdGain = ctx.createGain();
-    this.crowdGain.gain.value = 0.06;
-    src.connect(filter).connect(this.crowdGain).connect(this.master!);
-    src.start();
-  }
+  /** The crowd has no constant background bed (it read as cabin hum); it only reacts to plays. */
+  crowd(_level: number) {}
 
-  /** 0..1 excitement level controlling the crowd bed. */
-  crowd(level: number) {
-    const target = 0.04 + level * 0.25;
-    if (Math.abs(target - this.crowdTarget) < 0.01) return;
-    this.crowdTarget = target;
-    if (this.crowdGain && this.ctx) this.crowdGain.gain.setTargetAtTime(this.crowdTarget, this.ctx.currentTime, 0.4);
-  }
-
+  /**
+   * A crowd reaction: a short swell of voices (several detuned band-passed
+   * noise layers with a fast rise and a natural decay), only when something happens.
+   */
   cheer(intensity = 1) {
     const ctx = this.ensure();
-    if (!ctx || !this.enabled || !this.crowdGain) return;
-    const t = ctx.currentTime;
-    this.crowdGain.gain.cancelScheduledValues(t);
-    this.crowdGain.gain.setValueAtTime(this.crowdGain.gain.value, t);
-    this.crowdGain.gain.linearRampToValueAtTime(0.35 * intensity + 0.1, t + 0.15);
-    this.crowdGain.gain.setTargetAtTime(this.crowdTarget, t + 1.2, 0.8);
+    if (!ctx || !this.enabled) return;
+    const now = ctx.currentTime;
+    const dur = 1.1 + intensity * 0.9;
+    const len = Math.floor(ctx.sampleRate * dur);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, now);
+    out.gain.exponentialRampToValueAtTime(0.09 + 0.16 * intensity, now + 0.12);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    out.connect(this.master!);
+    // Voices: a few formant-like bands, slightly detuned, so it reads as people rather than wind.
+    for (const [f, q, g] of [
+      [520, 3.5, 0.7],
+      [1150, 4, 0.55],
+      [2300, 5, 0.3],
+    ]) {
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.playbackRate.value = 0.94 + Math.random() * 0.12;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f * (0.95 + Math.random() * 0.1);
+      bp.Q.value = q;
+      const gn = ctx.createGain();
+      gn.gain.value = g;
+      src.connect(bp).connect(gn).connect(out);
+      src.start(now);
+      src.stop(now + dur);
+    }
   }
 
   private noiseBurst(duration: number, freq: number, q: number, gain: number, type: BiquadFilterType = 'bandpass') {

@@ -87,7 +87,7 @@ export function buildBody(def: PlayerDef, kit: Kit, team: TeamDef, lowDetail: bo
   const bulk = bulkFor(def.pos);
   const limbBulk = 1 + (bulk - 1) * 1.2;
   const hipBulk = 1 + (bulk - 1) * 0.5;
-  const traits = hash(def.id);
+  const traits = hash(def.look ?? def.id);
   const D = lowDetail
     ? { torsoRows: 16, torsoCols: 20, jerseyRows: 18, jerseyCols: 24, limbRows: 6, limbCols: 9, capRows: 2, headRows: 10, headCols: 14, small: 5 }
     : { torsoRows: 26, torsoCols: 32, jerseyRows: 32, jerseyCols: 44, limbRows: 10, limbCols: 14, capRows: 3, headRows: 18, headCols: 24, small: 7 };

@@ -79,8 +79,11 @@ function pickBots(contest: ContestId, exclude: TeamDef, seed: string): { def: Pl
 function runContest(app: App, ticket: RoundTicket, contest: ContestId, team: TeamDef) {
   if (ticket.outcome.kind !== 'contest') return;
   const outcome = ticket.outcome;
-  const name = store.data.playerName || 'You';
-  const player = makeCareerPlayer(name, contest === 'dunk' ? 'SF' : contest === 'three' ? 'SG' : 'PG');
+  // Your MyCareer name if you have one; otherwise the jersey just says YOU.
+  const first = store.data.playerFirst || (store.data.playerName ? store.data.playerName.split(' ')[0] : '');
+  const last = store.data.playerLast || (store.data.playerName ? store.data.playerName.split(' ').slice(1).join(' ') : '') || 'You';
+  const name = `${first} ${last}`.trim();
+  const player = makeCareerPlayer(first, last, contest === 'dunk' ? 'SF' : contest === 'three' ? 'SG' : 'PG');
   player.number = 7;
   const info = CONTESTS.find((c) => c.id === contest)!;
   const strip = `${info.name} · STAKE ${fmtCredits(ticket.bet)} CR · CHAMPION PAYS ${fmtCredits(ticket.bet * outcome.paytable[0])}`;

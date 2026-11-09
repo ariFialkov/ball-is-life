@@ -150,17 +150,17 @@ export class Hud {
     const offense = match.possession === 0;
     const pad = s.lastDevice === 'gamepad' ? s.gamepadType : null;
     const names = pad === 'ps'
-      ? { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2', skill: 'R-STICK' }
+      ? { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2', skill: 'R-STICK', pick: 'L1' }
       : pad
-        ? { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT', skill: 'R-STICK' }
+        ? { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT', skill: 'R-STICK', pick: 'LB' }
         : s.usingTouch
           ? null
-          : { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT', skill: 'ARROWS' };
+          : { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT', skill: 'ARROWS', pick: 'F' };
     let hint = '';
     if (names && match.opts.userControlled && match.controlled) {
       if (inbounding) hint = `<b>${names.b}</b> Inbound pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · aim with the stick`;
-      else if (withBall) hint = `<b>${names.a}</b> Shoot · <b>${names.b}</b> Pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · <b>${names.skill}</b> Dribble moves · <b>${names.sprint}</b> Sprint`;
-      else if (offense) hint = `<b>${names.b}</b> Call for the ball · <b>${names.sprint}</b> Sprint`;
+      else if (withBall) hint = `<b>${names.a}</b> Shoot · <b>${names.b}</b> Pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · <b>${names.skill}</b> Moves · <b>${names.pick}</b> Call screen · <b>${names.sprint}</b> Sprint`;
+      else if (offense) hint = `<b>${names.b}</b> Call for the ball · <b>${names.pick}</b> Set screen (stand still) · <b>${names.y}</b> Rebound · <b>${names.sprint}</b> Sprint`;
       else hint = `<b>${names.a}</b> Steal · <b>${names.y}</b> Block · <b>${names.b}</b> Switch · <b>${names.sprint}</b> Sprint`;
     }
     if (this.hintEl.innerHTML !== hint) this.hintEl.innerHTML = hint;
@@ -170,7 +170,7 @@ export class Hud {
       const st = u.stats;
       const mom = match.nextMoment;
       this.careerEl.style.display = '';
-      this.careerEl.innerHTML = `<b>${u.def.last.toUpperCase()}</b> ${st.pts} PTS · ${st.ast} AST · ${st.reb} REB${match.userOnCourt ? '' : mom ? ' · <i>on the bench</i>' : ''}`;
+      this.careerEl.innerHTML = `<b>${u.def.first.toUpperCase()} ${u.def.last.toUpperCase()}</b> ${st.pts} PTS · ${st.reb} REB · ${st.ast} AST · ${st.stl} STL · ${st.blk} BLK · ${st.fgm}/${st.fga} FG${match.userOnCourt ? '' : mom ? ' · <i>on the bench</i>' : ''}`;
     } else this.careerEl.style.display = 'none';
     if (match.debug && match.director?.lastMods) {
       const d = match.director.lastMods;

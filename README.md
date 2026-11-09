@@ -22,7 +22,7 @@ Demo credits only. The game starts you with 1,000 CR; Settings has a `+1000 DEMO
 | Mode | Bet | Payout |
 | --- | --- | --- |
 | **Quick Game** | Moneyline on your team. Fractional odds from 1:1 to 2.5:1 depending on the rating gap between the two teams. | Win pays `bet × (1 + odds)`. |
-| **My Career** | One contract stake. You start on the bench and get subbed in for your "moments"; play well and your minutes grow. Each game earns a performance bonus (grade F to A+). | Bonuses accumulate and pay when the career ends by retirement, career-ending injury or being cut. Retire early to collect what you have banked. |
+| **My Career** | One contract stake. Create your player (first and last name), start on the bench and get subbed in for your "moments". Every game is graded F to A+ from your real stat line, judged for your position and how far into your career you are; good grades earn incentive bonuses and more minutes. | The career pays exactly the ticket, reached through what happens to it: injuries, contract calls, locker-room fallout, trades when you have banked more; extensions, shoe deals and retirement tours when you have banked less. |
 | **Playoffs** | Entry stake into an 8-team single-elimination bracket. | Ladder: out in QF 0x · reach SF 1.2x · reach Final 3x · Champion 10x. Cash out between rounds at the current ladder value. |
 | **All-Star** | Entry stake into the 3-Point Contest, Slam Dunk Contest or Skills Challenge against three league stars, in the real formats (a first round, then a final). You go first in every round; the bots go after. | Champion 3x (dunk 4x), runner-up 1.5x (dunk 1.2x). |
 
@@ -53,7 +53,8 @@ The engine uses only erasable TypeScript syntax, so the same file runs in Node w
 | Shoot (hold, release in the green) / Steal on D | Space / J | Square | X | SHOOT / STEAL |
 | Pass / Switch on D / Call for the ball off it | E / K | Cross | A | PASS / SWITCH / CALL |
 | Bounce pass | Q / L | Circle | B | |
-| Lob pass / Block on D | R / I | Triangle | Y | LOB / BLOCK |
+| Lob pass / Block on D / Rebound off the ball | R / I | Triangle | Y | LOB / BLOCK / JUMP |
+| Call a screen (with the ball) / Set a screen (off it, standing still) | F | L1 | LB | SCREEN |
 | Dribble moves (skill stick) | Arrow keys | Right stick | Right stick | Swipe on the right side |
 | Pause | Esc / P | Options | Menu | II |
 | Menus | Arrows, Enter, Esc | D-pad or left stick, Cross, Circle | D-pad or left stick, A, B | Tap |
@@ -73,6 +74,10 @@ The ball really changes hands: crossovers bounce in front, between-the-legs unde
 
 Near the rim, Shoot triggers a layup or dunk automatically. On offense the controlled player follows the ball; on defense it auto-switches to the man guarding the ball and can be switched manually.
 
+**Pick and roll.** With the ball, L1 / LB / F calls the nearest big up to set a ball screen on your defender; come off their shoulder and they read it: roll to the rim, pop out for a jumper, or clear the lane (bigs who can finish roll more, shooters pop, a hedge or a switch opens the roll, a crowded paint says pop). Off the ball, standing still, the same button sets a screen yourself; an AI ball handler will use it. Screeners are planted: a defender who runs into one gets hung up, and defenses sometimes switch. AI teams run their own pick and rolls.
+
+**Passing and rebounding.** Passes lead the receiver: they are aimed where the receiver will be, and keep leading them in flight. Your player gets a little extra reach on passes thrown to them and on rebounds (2K-style catch assist); rebounding reach also grows with height and with Triangle to jump, and a bot you have sealed behind you rarely beats you to the ball.
+
 **Catch and shoot.** Hold Shoot while a pass is on its way and the jumper starts the moment you catch it; a press during the catch works too.
 
 **Possession rules.** Out-of-bounds balls go against whoever touched the ball last, including deflections: a defender who pokes the ball loose, tips a pass or fumbles a loose ball gets the blame, and a block counts as the blocker's touch. Once the ball handler crosses half court the offense cannot take the ball back over it (backcourt violation), and it has 8 seconds to get it across. A shot or a defensive touch resets both.
@@ -85,7 +90,7 @@ Near the rim, Shoot triggers a layup or dunk automatically. On offense the contr
 - Ball physics: ballistic flight with rim (torus), backboard and floor collisions; scripted makes get a soft rim, scripted misses a realistic rattle-out.
 - 2K-style camera behind the offense (flips with possession) plus a broadcast camera and a cinematic multi-shot reel that plays an all-bot game behind the main menu with a film-grain/scanline/decal overlay.
 - PWA: `public/manifest.json` + `public/sw.js` (app-shell precache, stale-while-revalidate runtime cache, installable on iOS/Android/desktop). Fullscreen, safe-area aware, portrait and landscape.
-- Procedural WebAudio SFX (bounces, swish, rim, buzzer, crowd bed) with no audio files.
+- Procedural WebAudio SFX (bounces, swish, rim, buzzer, crowd reactions on big plays; no constant background bed) with no audio files.
 
 ### Debug / test hooks
 

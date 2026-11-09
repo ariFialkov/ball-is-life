@@ -45,6 +45,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
   let simOverlay: HTMLElement | null = null;
   let simTimer = 0;
   let pendingBanner: string | null = null;
+  let injurySimmed = false;
 
   const closeDialog = () => {
     dialog?.remove();
@@ -126,14 +127,21 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
         const inbounding = !!ib && match.phase !== 'live' && ib.manual && match.controlled === ib.inbounder;
         const withBall = match.phase === 'live' && !!match.holder && match.holder === match.controlled;
         if (inbounding) app.touch.setLabels({ a: '', b: 'INBOUND', x: 'SPRINT', y: 'LOB' });
-        else if (withBall) app.touch.setLabels({ a: 'SHOOT', b: 'PASS', x: 'SPRINT', y: 'LOB' });
-        else if (match.possession === 0) app.touch.setLabels({ a: '', b: 'CALL', x: 'SPRINT', y: '' });
+        else if (withBall) app.touch.setLabels({ a: 'SHOOT', b: 'PASS', x: 'SPRINT', y: 'LOB', pick: 'SCREEN' });
+        else if (match.possession === 0) app.touch.setLabels({ a: '', b: 'CALL', x: 'SPRINT', y: 'JUMP', pick: 'SCREEN' });
         else app.touch.setLabels({ a: 'STEAL', b: 'SWITCH', x: 'SPRINT', y: 'BLOCK' });
         app.touch.setSwipe(withBall);
       }
       for (let i = 0; i < app.timeScale; i++) match.update(Math.min(dt, 1 / 30));
       const events = match.takeEvents();
       hud.update(dt, match, events);
+      // Career: an injury ends the player's night; the rest of the game is simulated.
+      if (opts.matchOptions.career && match.userInjured && !injurySimmed && match.phase !== 'end') {
+        injurySimmed = true;
+        match.fastForwardToNextMoment();
+        startSim('INJURY');
+        simTimer = 2.6;
+      }
       // Career: when a moment ends, sim ahead to the next one.
       if (opts.matchOptions.career && match.momentOver && match.phase === 'live' && !match.ball.shot) {
         const more = match.fastForwardToNextMoment();
