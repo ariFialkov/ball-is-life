@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { teamById, type Kit, type PlayerDef } from '../data/teams.ts';
 import { buildBody, type BuiltBody, type SkeletonBone } from './body.ts';
 import { J } from './bodyShape.ts';
+import { BALL_R } from './constants.ts';
+import { dribbleAt, dribbleTiming, type DribbleParams } from './dribble.ts';
 import { kitFontPromise } from './jersey.ts';
 
 export type AnimState =
@@ -51,13 +53,22 @@ interface Pose {
   hipsY: number;
   /** jump height added to the whole body */
   jump: number;
+  /** pelvis yaw (rotates with the stride, the chest counter-rotates) */
+  hipsYaw: number;
 }
 
 const emptyPose = (): Pose => ({
   bones: Object.fromEntries(BONES.map((b) => [b, [0, 0, 0]])) as unknown as Record<BoneName, [number, number, number]>,
   hipsY: 0,
   jump: 0,
+  hipsYaw: 0,
 });
+
+/** States in which the body is on its feet and moving, so it reacts to the forces on it. */
+const GROUNDED_STATES = new Set<AnimState>(['idle', 'idleBall', 'run', 'dribble', 'defense', 'catch', 'screen']);
+const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
+const wrapPi = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 // Rotation conventions (model faces +Z): a limb hanging down (-Y) swings
 // forward with a NEGATIVE rotation.x; the spine leans forward with a
@@ -113,6 +124,45 @@ export class Character {
   /** Scales the dunk leap (dunk-contest athletes get up higher than an in-game dunk). */
   jumpBoost = 1;
 
+  // --- Kinetics: the body reacts to the forces on it (sensed from how the root actually moves).
+  private kPrev = new THREE.Vector3();
+  private kInit = false;
+  /** Smoothed ground velocity and acceleration (world, m/s and m/s²). */
+  readonly vel = new THREE.Vector3();
+  readonly acc = new THREE.Vector3();
+  /** Whole-body lean about the feet: forward (+) when accelerating, back when braking. */
+  private pitch = 0;
+  private pitchV = 0;
+  /** Whole-body bank into a turn (rotation about the forward axis). */
+  private bank = 0;
+  private bankV = 0;
+  /** Hard cut: 1 at the plant, decaying; side +1 = cutting toward the r (+X) side. */
+  private plant = 0;
+  private plantSide = 0;
+  /** Hop-stop / spot-up settle after arriving from a run: 1 at the stop, decaying. */
+  private settle = 0;
+  private recentSpeed = 0;
+  /** 0..1: how hard the player is driving forward (arm pump, forward lean). */
+  private drive = 0;
+
+  // --- Dribble: the hand pushes and receives the ball (see dribble.ts); the arm reaches it with IK.
+  /** Set by the caller each frame: a live dribble with no hand switch in progress. */
+  dribbling = false;
+  /** 0..1 through the current dribble (0 = hand at rest on top of the ball). */
+  dribbleU = 0;
+  /** Ball centre (world) while dribbling. */
+  readonly dribbleBall = new THREE.Vector3();
+  /** True on the frame the dribble hits the floor. */
+  dribbleBounce = false;
+  /** 0..1 how fully the hand is driving the ball (ramps in when a dribble starts). */
+  dribbleWeight = 0;
+  private dribTop = 0;
+  private dribRel = 0;
+  private dribInit = false;
+  private dribLag = new THREE.Vector3();
+  private dribRelVel = new THREE.Vector3();
+  private dribInFlight = false;
+
   constructor(def: PlayerDef, kit: Kit, opts: { lowDetail?: boolean } = {}) {
     this.def = def;
     const h = def.height;
@@ -163,9 +213,9 @@ export class Character {
   update(dt: number, moveSpeed01: number) {
     this.stateTime += dt;
     this.moveBlend += (moveSpeed01 - this.moveBlend) * Math.min(1, dt * 10);
-    const stride = 0.5 + this.moveBlend * 1.0;
     this.phase += dt * (6.5 + this.moveBlend * 6) * (this.moveBlend > 0.03 ? 1 : 0) * this.strideDir;
     this.dribblePhase += dt * 10.5;
+    this.sense(dt);
     let target: Pose;
     if (this.switchFrom !== null && this.state === 'dribble') {
       // Hand switch: blend the dribble pose for the old hand into the mirrored one.
@@ -181,6 +231,7 @@ export class Character {
     target.bones.spine[2] -= this.lean;
     target.bones.chest[1] += this.twist;
     target.hipsY += this.crouch;
+    this.kineticPose(target);
     // Quick blend for transitions, snappier when entering explosive actions.
     const rate = this.state === 'shoot' || this.state === 'dunk' || this.state === 'layup' || this.state === 'pass' || this.state === 'block' ? 20 : 12;
     const k = Math.min(1, dt * rate);
@@ -192,9 +243,269 @@ export class Character {
       c[2] += (t[2] - c[2]) * k;
     }
     this.current.hipsY += (target.hipsY - this.current.hipsY) * k;
+    this.current.hipsYaw += (target.hipsYaw - this.current.hipsYaw) * k;
     this.current.jump = target.jump;
     this.applyPose(this.current);
-    void stride;
+    this.dribbleStep(dt);
+  }
+
+  /** Read the forces on the body from how the root moved, and drive the lean/bank springs and cut/stop reactions. */
+  private sense(dt: number) {
+    const p = this.root.position;
+    if (!this.kInit || dt <= 0) {
+      this.kPrev.copy(p);
+      this.kInit = true;
+      return;
+    }
+    const dx = p.x - this.kPrev.x;
+    const dz = p.z - this.kPrev.z;
+    this.kPrev.copy(p);
+    if (dx * dx + dz * dz > 0.6) {
+      // Teleported (reset for a throw-in, substitution): no forces.
+      this.vel.set(0, 0, 0);
+      this.acc.set(0, 0, 0);
+      return;
+    }
+    const kv = Math.min(1, dt * 25);
+    const nvx = this.vel.x + (dx / dt - this.vel.x) * kv;
+    const nvz = this.vel.z + (dz / dt - this.vel.z) * kv;
+    const ka = Math.min(1, dt * 12);
+    const lim = (v: number) => Math.max(-32, Math.min(32, v));
+    this.acc.x += (lim((nvx - this.vel.x) / dt) - this.acc.x) * ka;
+    this.acc.z += (lim((nvz - this.vel.z) / dt) - this.acc.z) * ka;
+    this.vel.set(nvx, 0, nvz);
+    const speed = Math.hypot(nvx, nvz);
+    this.recentSpeed = Math.max(speed, this.recentSpeed - dt * 3);
+    // Body frame: forward is local +Z, the r side is local +X.
+    const yaw = this.root.rotation.y;
+    const sy = Math.sin(yaw);
+    const cy = Math.cos(yaw);
+    const af = this.acc.x * sy + this.acc.z * cy;
+    // Turning force: the part of the acceleration across the direction of travel (what bends a curl or
+    // a cut), expressed on the body's sideways axis. Standing still, plain sideways acceleration counts.
+    let ax = this.acc.x;
+    let az = this.acc.z;
+    if (speed > 0.8) {
+      const ux = nvx / speed;
+      const uz = nvz / speed;
+      const along = ax * ux + az * uz;
+      ax -= along * ux;
+      az -= along * uz;
+    }
+    const al = ax * cy - az * sy;
+    const turn = Math.hypot(ax, az);
+    const grounded = this.current.jump < 0.03;
+    const kin = grounded && GROUNDED_STATES.has(this.state) ? 1 : 0;
+    // Lean into the acceleration about the feet (a runner leans forward to speed up, back to brake,
+    // and banks into a curl like a cyclist), through an underdamped spring so it sways and settles.
+    const pitchT = Math.max(-0.13, Math.min(0.17, af * 0.018)) * kin;
+    const bankT = Math.max(-0.22, Math.min(0.22, -al * 0.022)) * kin;
+    const K = 150;
+    const C = 2 * Math.sqrt(K) * 0.5;
+    this.pitchV += ((pitchT - this.pitch) * K - this.pitchV * C) * dt;
+    this.pitch += this.pitchV * dt;
+    this.bankV += ((bankT - this.bank) * K - this.bankV * C) * dt;
+    this.bank += this.bankV * dt;
+    // A hard change of direction at speed: plant the outside foot and push off it.
+    if (kin > 0.5 && speed > 2.2 && turn > 10 && Math.abs(al) > 3 && this.plant < 0.25) {
+      this.plant = 1;
+      this.plantSide = Math.sign(al);
+      this.bankV -= this.plantSide * 1.1;
+    }
+    // Arriving from a run and stopping (spotting up, squaring to the ball): hop-stop and sink.
+    if (kin > 0.5 && this.recentSpeed > 2.8 && speed < 0.8 && this.settle < 0.15) {
+      this.settle = 1;
+      this.recentSpeed = 0;
+      this.pitchV -= 0.8;
+    }
+    this.plant = Math.max(0, this.plant - dt * 4.2);
+    this.settle = Math.max(0, this.settle - dt * 3);
+    this.drive += (Math.max(0, Math.min(1, af / 12)) * kin - this.drive) * Math.min(1, dt * 8);
+  }
+
+  /** Additive reactions on top of the authored pose: pumping arms, the plant on a cut, the hop-stop. */
+  private kineticPose(p: Pose) {
+    if (!GROUNDED_STATES.has(this.state)) return;
+    const b = p.bones;
+    // Keep the eyes level against the lean.
+    b.head[0] -= this.pitch * 0.7;
+    b.neck[2] += this.bank * 0.5;
+    // Driving forward: lower, longer, arms pumping harder.
+    if (this.drive > 0.01) {
+      const d = this.drive;
+      b.spine[0] += 0.1 * d;
+      const s = Math.sin(this.phase);
+      if (this.state === 'run') {
+        b.lShoulder[0] += 0.3 * s * d;
+        b.rShoulder[0] -= 0.3 * s * d;
+      }
+      p.hipsY -= 0.03 * d;
+    }
+    if (this.plant > 0.01) {
+      const k = Math.sin(Math.PI * this.plant) * 0.6 + this.plant * 0.4;
+      const side = this.plantSide;
+      // The outside leg (away from the new direction) reaches wide and takes the load; the inside knee sinks.
+      const outHip = side > 0 ? 'lHip' : 'rHip';
+      const outKnee = side > 0 ? 'lKnee' : 'rKnee';
+      const inKnee = side > 0 ? 'rKnee' : 'lKnee';
+      b[outHip][2] += (side > 0 ? -1 : 1) * 0.32 * k;
+      b[outKnee][0] += 0.3 * k;
+      b[inKnee][0] += 0.45 * k;
+      // Shoulders and eyes turn into the cut ahead of the hips.
+      b.chest[1] += side * 0.3 * k;
+      b.head[1] += side * 0.3 * k;
+      p.hipsYaw -= side * 0.12 * k;
+      p.hipsY -= 0.08 * k;
+    }
+    if (this.settle > 0.01) {
+      const u = 1 - this.settle;
+      // A small hop into the stop, then the knees absorb it and the feet are set wide.
+      const hop = u < 0.3 ? Math.sin((Math.PI * u) / 0.3) * 0.035 : 0;
+      const sink = Math.sin(Math.PI * u);
+      p.jump += hop;
+      p.hipsY -= 0.09 * sink;
+      b.lKnee[0] += 0.45 * sink;
+      b.rKnee[0] += 0.45 * sink;
+      b.lHip[0] -= 0.25 * sink;
+      b.rHip[0] -= 0.25 * sink;
+      b.lHip[2] -= 0.08 * this.settle;
+      b.rHip[2] += 0.08 * this.settle;
+      b.spine[0] += 0.12 * sink;
+    }
+  }
+
+  /** Advance the dribble and put the dribbling hand on the ball. */
+  private dribbleStep(dt: number) {
+    this.dribbleBounce = false;
+    const on = this.dribbling && this.state === 'dribble' && this.switchFrom === null && this.current.jump < 0.05;
+    if (!on) {
+      this.dribbleWeight = 0;
+      this.dribInit = false;
+      this.dribInFlight = false;
+      this.dribLag.set(0, 0, 0);
+      return;
+    }
+    this.dribbleWeight = Math.min(1, this.dribbleWeight + dt * 6);
+    const h = this.h;
+    const hand = this.handedness;
+    const side = hand > 0 ? 'r' : 'l';
+    const m = this.moveBlend;
+    this.root.updateMatrixWorld(true);
+    // Where the ball goes, in the body frame: outside the hip on the ball side, further out front when running.
+    const lat = hand * 0.165 * h;
+    const fwd = (0.1 + 0.09 * m) * h;
+    const sh = this.root.worldToLocal(this.bones[`${side}Shoulder`].getWorldPosition(_v));
+    const elbow = this.bones[`${side}Elbow`].position.length();
+    const anchor = this.rHand.position;
+    const reach = elbow + Math.hypot(this.bones[`${side}Wrist`].position.length() - anchor.y, anchor.z);
+    const hd = Math.hypot(lat - sh.x, fwd - sh.z);
+    const drop = Math.sqrt(Math.max(0.01, (0.95 * reach) ** 2 - hd * hd));
+    // Heights follow the shoulders: a low, crouched dribble is a lower, quicker dribble.
+    const topT = sh.y - 0.5 * drop;
+    const relT = sh.y - 0.93 * drop;
+    if (!this.dribInit) {
+      // A dribble always starts with the hand on top of the ball.
+      this.dribbleU = 0;
+      this.dribTop = topT;
+      this.dribRel = relT;
+      this.dribInit = true;
+    }
+    const ks = Math.min(1, dt * 7);
+    this.dribTop += (topT - this.dribTop) * ks;
+    this.dribRel += (relT - this.dribRel) * ks;
+    const params: DribbleParams = {
+      palmTop: this.dribTop,
+      palmRelease: Math.min(this.dribRel, this.dribTop - 0.12),
+      palmCatch: this.dribTop - 0.45 * (this.dribTop - this.dribRel),
+      push: 0.1 - 0.022 * m,
+      cushion: 0.095 - 0.015 * m,
+    };
+    const tm = dribbleTiming(params);
+    const u0 = this.dribbleU;
+    let u1 = u0 + dt / tm.period;
+    if (u0 < tm.bounceAt && u1 >= tm.bounceAt) this.dribbleBounce = true;
+    if (u1 >= 1) u1 -= 1;
+    this.dribbleU = u1;
+    const smp = dribbleAt(params, tm, u1);
+    // Inertia: once it leaves the hand the ball keeps the velocity it was pushed with, so on a hard
+    // cut it carries on the old way and the hand goes and gets it (the offset fades out by the catch).
+    if (!smp.contact) {
+      if (!this.dribInFlight) this.dribRelVel.copy(this.vel);
+      this.dribInFlight = true;
+      this.dribLag.x += (this.dribRelVel.x - this.vel.x) * dt;
+      this.dribLag.z += (this.dribRelVel.z - this.vel.z) * dt;
+      this.dribLag.clampLength(0, 0.38);
+    } else {
+      this.dribInFlight = false;
+      this.dribLag.set(0, 0, 0);
+    }
+    const fade = smp.contact ? 0 : 1 - smp.flight * smp.flight * (3 - 2 * smp.flight);
+    this.root.localToWorld(this.dribbleBall.set(lat, smp.ball, fwd));
+    this.dribbleBall.addScaledVector(this.dribLag, fade);
+    // The palm sits on top of the ball while in contact; in flight it follows its own path above it.
+    this.root.localToWorld(_w.set(lat, smp.palm, fwd));
+    if (smp.contact) _w.addScaledVector(this.dribLag, fade);
+    this.reachArm(side, _w, smp.wrist, this.dribbleWeight);
+  }
+
+  /**
+   * Two-bone IK: set the shoulder (pitch + spread), elbow and wrist of one arm so its palm anchor
+   * reaches `target` (world), blended over the current pose by `w`.
+   */
+  private reachArm(side: 'l' | 'r', target: THREE.Vector3, wrist: number, w: number) {
+    const B = this.bones;
+    const sh = B[`${side}Shoulder`];
+    const el = B[`${side}Elbow`];
+    const wr = B[`${side}Wrist`];
+    const chest = sh.parent!;
+    const d = chest.worldToLocal(_v.copy(target)).sub(sh.position);
+    const anchor = side === 'r' ? this.rHand.position : this.lHand.position;
+    const cw = Math.cos(wrist);
+    const sw = Math.sin(wrist);
+    const ex = wr.position.x + anchor.x;
+    const ey = wr.position.y + anchor.y * cw - anchor.z * sw;
+    const ez = wr.position.z + anchor.y * sw + anchor.z * cw;
+    const ax = el.position.x;
+    const ay = el.position.y;
+    const az = el.position.z;
+    const dist = d.length();
+    // Elbow: the distance shoulder→palm grows monotonically as the elbow straightens.
+    let lo = -2.5;
+    let hi = 0;
+    let px = 0;
+    let py = 0;
+    let pz = 0;
+    for (let i = 0; i < 18; i++) {
+      const th = (lo + hi) / 2;
+      const c = Math.cos(th);
+      const s = Math.sin(th);
+      px = ax + ex;
+      py = ay + ey * c - ez * s;
+      pz = az + ey * s + ez * c;
+      if (Math.hypot(px, py, pz) < dist) lo = th;
+      else hi = th;
+    }
+    const elbowX = (lo + hi) / 2;
+    // Shoulder: spread (z) to match the sideways reach, then pitch (x) to swing onto the target.
+    const R = Math.hypot(px, py);
+    const phi = Math.atan2(py, px);
+    const ac = Math.acos(Math.max(-1, Math.min(1, d.x / R)));
+    const z1 = wrapPi(ac - phi);
+    const z2 = wrapPi(-ac - phi);
+    const z = Math.abs(z1) < Math.abs(z2) ? z1 : z2;
+    const py2 = px * Math.sin(z) + py * Math.cos(z);
+    const x = wrapPi(Math.atan2(d.z, d.y) - Math.atan2(pz, py2));
+    const cur = this.current.bones;
+    const blend = (k: 'lShoulder' | 'rShoulder' | 'lElbow' | 'rElbow' | 'lWrist' | 'rWrist', v: [number, number, number]) => {
+      const c = cur[k];
+      c[0] += (v[0] - c[0]) * w;
+      c[1] += (v[1] - c[1]) * w;
+      c[2] += (v[2] - c[2]) * w;
+      B[k].rotation.set(c[0], c[1], c[2]);
+    };
+    blend(`${side}Shoulder`, [x, 0, z]);
+    blend(`${side}Elbow`, [elbowX, 0, 0]);
+    blend(`${side}Wrist`, [wrist, 0, 0]);
   }
 
   private applyPose(p: Pose) {
@@ -216,10 +527,13 @@ export class Character {
       const knee = b[`${side}Knee`];
       const extra = b[`${side}Ankle`];
       const flat = -(hip[0] + knee[0]);
-      const pitch = flat * (1 - air) + 0.55 * air + extra[0];
-      B[`${side}Ankle`].rotation.set(Math.min(0.95, Math.max(-0.75, pitch)), extra[1], -hip[2] * (1 - air) + extra[2]);
+      const pitch = flat * (1 - air) + 0.55 * air + extra[0] - this.pitch * (1 - air);
+      B[`${side}Ankle`].rotation.set(Math.min(0.95, Math.max(-0.75, pitch)), extra[1], -hip[2] * (1 - air) + extra[2] - this.bank * (1 - air));
     }
-    this.hips.position.y = this.standHipY + p.hipsY + p.jump;
+    // The whole body leans/banks about the feet: tilt the hips and slide them so the feet stay put.
+    const hh = this.standHipY + p.hipsY;
+    this.hips.rotation.set(this.pitch, p.hipsYaw, this.bank);
+    this.hips.position.set(-hh * Math.sin(this.bank), hh * Math.cos(this.bank) * Math.cos(this.pitch) + p.jump, hh * Math.sin(this.pitch));
     this.shadowBlob.scale.setScalar(1 - Math.min(0.6, p.jump * 0.6));
     (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.25 - Math.min(0.15, p.jump * 0.2);
   }
@@ -253,7 +567,8 @@ export class Character {
       b.rKnee = [(0.25 + 0.9 * Math.max(0, c)) * amp + 0.08, 0, 0];
       b.spine = [0.08 + 0.22 * amp, Math.sin(ph) * 0.06 * amp, 0];
       // Shoulders counter-rotate against the hips; the head stays steady.
-      b.chest = [0, -s * 0.14 * amp, 0];
+      b.chest = [0, -s * 0.2 * amp, 0];
+      p.hipsYaw = s * 0.1 * amp;
       b.neck = [0, s * 0.08 * amp, 0];
       // Push off through the toes at the back of each stride.
       b.lAnkle = [0.35 * Math.max(0, s) * amp, 0, 0];
@@ -603,6 +918,7 @@ function blendPose(a: Pose, b: Pose, t: number): Pose {
   }
   out.hipsY = a.hipsY + (b.hipsY - a.hipsY) * t;
   out.jump = a.jump + (b.jump - a.jump) * t;
+  out.hipsYaw = a.hipsYaw + (b.hipsYaw - a.hipsYaw) * t;
   return out;
 }
 const smooth = (v: number) => v * v * (3 - 2 * v);

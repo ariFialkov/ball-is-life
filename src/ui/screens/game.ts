@@ -151,6 +151,12 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
           // No more moments: the rest of the game is simulated.
           simTimer = 2.2;
         }
+      } else if (opts.matchOptions.career && !match.userOnCourt && !simOverlay && (match.phase === 'live' || match.phase === 'inbound') && !match.ball.shot) {
+        // Safety net: never make the player watch live play from the bench.
+        const more = match.fastForwardToNextMoment();
+        startSim(more ? 'BACK ON THE BENCH' : 'FINAL STRETCH');
+        if (more) pendingBanner = `${opts.matchOptions.career.player.last.toUpperCase()} CHECKS BACK IN`;
+        else simTimer = 2.2;
       }
       if (match.finished && !finished) {
         finished = true;

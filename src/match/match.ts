@@ -379,6 +379,17 @@ export class Match {
     return this.elapsed / this.regulation;
   }
 
+  get otLength() {
+    return Math.min(60, this.opts.quarterLength);
+  }
+
+  /** Game time from the period and the clock (never drifts when the clock sits at 0 during a buzzer shot). */
+  get gameTime() {
+    const left = Math.max(0, this.clock);
+    if (this.period <= 4) return (this.period - 1) * this.opts.quarterLength + this.opts.quarterLength - left;
+    return this.regulation + (this.period - 5) * this.otLength + this.otLength - left;
+  }
+
   get margin() {
     return this.scores[0] - this.scores[1];
   }
@@ -399,7 +410,7 @@ export class Match {
   // Period / possession management
 
   private setupPeriodStart() {
-    this.clock = this.period <= 4 ? this.opts.quarterLength : Math.min(60, this.opts.quarterLength);
+    this.clock = this.period <= 4 ? this.opts.quarterLength : this.otLength;
     this.shotClock = 24;
     const team: 0 | 1 = this.period % 2 === 1 ? 0 : 1;
     this.ball.shot = null;
@@ -780,6 +791,15 @@ export class Match {
       this.ball.mode = 'loose';
       return;
     }
+    if (this.period >= 4 && this.opts.career && this.userAthlete) {
+      // Career overtime: the player plays all of it, or (injured) it is simulated.
+      if (this.userInjured) {
+        this.simToFinal();
+        return;
+      }
+      const start = this.regulation + (this.period - 4) * this.otLength;
+      this.momentPlan.push({ start, end: start + this.otLength + 1 });
+    }
     this.phase = 'period';
     this.phaseTimer = this.opts.reel ? 0.5 : 3;
     this.events.push({ type: 'period', team: 0, text: this.period >= 4 ? 'OVERTIME' : this.period === 2 ? 'HALFTIME' : `END OF Q${this.period}` });
@@ -790,8 +810,13 @@ export class Match {
   private nextPeriod() {
     this.period++;
     this.setupPeriodStart();
+    this.elapsed = this.gameTime;
     this.phase = 'intro';
     this.phaseTimer = this.opts.reel ? 0.2 : 1.0;
+    if (this.opts.career && this.period > 4 && this.userAthlete && !this.userInjured && !this.userOnCourt) {
+      this.subUserIn();
+      this.events.push({ type: 'tip', team: 0, text: `OVERTIME · ${this.userAthlete.def.last.toUpperCase()} IS IN` });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -828,12 +853,41 @@ export class Match {
   }
 
   private fastForwardTo(targetElapsed: number) {
+    this.elapsed = this.gameTime;
+    // Reaching the end of regulation (or already past it) means finishing the game in the sim.
+    if (targetElapsed >= this.regulation - 0.01 || this.period > 4) {
+      this.simToFinal();
+      return;
+    }
     const delta = targetElapsed - this.elapsed;
     if (delta <= 0) return;
     this.subUserOut();
-    // Pace: roughly 2 points per 10 seconds per team, split so the margin follows the script.
-    const totalPts = Math.round((delta / 10) * 2 * 2);
     const targetMargin = this.director ? Math.round(this.director.targetMargin(targetElapsed / this.regulation)) : this.margin + Math.round(this.rng.gauss() * 3);
+    this.simPoints(delta, targetMargin);
+    // Advance the clock across periods (never past the end of Q4: that is simToFinal's job).
+    let remaining = delta;
+    while (remaining > 0.0005) {
+      const step = Math.min(remaining, this.clock);
+      this.clock -= step;
+      remaining -= step;
+      if (this.clock <= 0.001 && remaining > 0.0005 && this.period < 4) {
+        this.period++;
+        this.clock = this.opts.quarterLength;
+      } else if (this.clock <= 0.001) break;
+    }
+    this.clock = Math.max(0, this.clock);
+    this.elapsed = this.gameTime;
+    // Resume with a throw-in for whichever team, players already in formation.
+    const team: 0 | 1 = this.rng.chance(0.5) ? 0 : 1;
+    this.holder = null;
+    for (const a of this.athletes) if (a.onCourt) this.resetAthlete(a);
+    this.prepareInbound(team, 0, this.rng.chance(0.5) ? 2 : -2, 'sub', 0.8, true);
+  }
+
+  /** Score `seconds` of simulated play so the margin lands on `targetMargin`, spread over the bench-side stat lines. */
+  private simPoints(seconds: number, targetMargin: number) {
+    // Pace: roughly 2 points per 10 seconds per team.
+    const totalPts = Math.max(Math.abs(targetMargin - this.margin), Math.round((seconds / 10) * 2 * 2));
     const deltaMargin = targetMargin - this.margin;
     let userPts = Math.round((totalPts + deltaMargin) / 2);
     let oppPts = totalPts - userPts;
@@ -841,7 +895,6 @@ export class Match {
     if (oppPts < 0) { userPts += -oppPts; oppPts = 0; }
     this.scores[0] += userPts;
     this.scores[1] += oppPts;
-    // Spread the points over the starters' stat lines.
     const spread = (team: 0 | 1, pts: number) => {
       const guys = this.athletes.filter((a) => a.team === team && !a.isUser);
       while (pts > 0) {
@@ -855,29 +908,32 @@ export class Match {
     };
     spread(0, userPts);
     spread(1, oppPts);
-    // Advance clocks across periods.
-    let remaining = delta;
-    while (remaining > 0) {
-      const step = Math.min(remaining, this.clock);
-      this.clock -= step;
-      this.elapsed += step;
-      remaining -= step;
-      if (this.clock <= 0.001 && remaining > 0) {
-        this.period = Math.min(4, this.period + 1);
-        this.clock = this.opts.quarterLength;
-      }
+  }
+
+  /** Career: simulate the rest of the game, overtime included, to its final score. */
+  private simToFinal() {
+    this.subUserOut();
+    this.ball.shot = null;
+    this.ball.pass = null;
+    const finalMargin = this.director ? this.director.finalMargin : this.margin + Math.round(this.rng.gauss() * 3);
+    const left = this.period <= 4 ? this.regulation - this.gameTime : Math.max(0, this.clock);
+    this.simPoints(left, finalMargin);
+    this.clock = 0;
+    if (this.period < 4) this.period = 4;
+    // Still level (no script to follow): overtime, simulated.
+    let guard = 0;
+    while (this.margin === 0 && guard++ < 6) {
+      this.period++;
+      const userWins = this.opts.script ? this.opts.script.userWins : this.rng.chance(0.5);
+      this.simPoints(this.otLength, (userWins ? 1 : -1) * (1 + this.rng.int(0, 4)));
     }
-    if (this.clock <= 0.001 && this.period >= 4) {
-      this.phase = 'period';
-      this.phaseTimer = 0;
-      this.endPeriod();
-      return;
-    }
-    // Resume with a throw-in for whichever team, players already in formation.
-    const team: 0 | 1 = this.rng.chance(0.5) ? 0 : 1;
-    this.holder = null;
-    for (const a of this.athletes) if (a.onCourt) this.resetAthlete(a);
-    this.prepareInbound(team, 0, this.rng.chance(0.5) ? 2 : -2, 'sub', 0.8, true);
+    if (this.margin === 0) this.scores[this.opts.script?.userWins === false ? 1 : 0] += 1;
+    if (this.period > 4) this.events.push({ type: 'tip', team: 0, text: this.period === 5 ? 'OVERTIME' : `${this.period - 4} OVERTIMES` });
+    this.elapsed = this.gameTime;
+    this.inbound = null;
+    this.phase = 'period';
+    this.phaseTimer = 0;
+    this.endPeriod();
   }
 
   /** Career: the user's player goes down and does not return. */
@@ -973,7 +1029,7 @@ export class Match {
     const live = this.phase === 'live';
     if (live && !this.clockHeld) {
       this.clock -= dt;
-      this.elapsed += dt;
+      this.elapsed = this.gameTime;
       this.shotClock -= dt;
       if (this.shotClock <= 0 && this.holder && !this.ball.shot) {
         this.shotClockViolation();
@@ -1635,6 +1691,7 @@ export class Match {
     a.move = null;
     a.lastMoveEnd = this.time;
     a.char.dribblePhase = 0;
+    a.char.dribbleU = 0;
   }
 
   /** Advance a dribble move. Returns true while the move's canned motion drives the player. */
@@ -2296,6 +2353,8 @@ export class Match {
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     a.yaw += diff * Math.min(1, dt * 12);
     c.root.rotation.y = a.yaw + spinOffset;
+    // A live dribble with no hand switch in progress: the hand drives the ball physically.
+    c.dribbling = this.holder === a && live && act === 'none' && !(m && m.from !== m.to);
     c.update(dt, speed01);
   }
 
@@ -2324,6 +2383,13 @@ export class Match {
         out.set(lerp(Fx, E.x, w), BALL_R + (top - BALL_R) * (1 - (1 - w) * (1 - w)), lerp(Fz, E.z, w));
       }
       if (live && m.t - dt < m.dur * 0.5 && m.t >= m.dur * 0.5) audio.bounce(0.6);
+      return;
+    }
+    if (c.dribbleWeight > 0) {
+      // The hand pushes and receives the ball (character dribble physics); ease in from wherever the ball was.
+      if (c.dribbleWeight >= 1) out.copy(c.dribbleBall);
+      else out.lerp(c.dribbleBall, Math.min(1, dt * 11));
+      if (c.dribbleBounce && live) audio.bounce(0.5);
       return;
     }
     const hp = c.handWorld(this.tmpA, a.ballHand > 0 ? 'r' : 'l');
