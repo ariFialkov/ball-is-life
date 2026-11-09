@@ -24,7 +24,7 @@ Demo credits only. The game starts you with 1,000 CR; Settings has a `+1000 DEMO
 | **Quick Game** | Moneyline on your team. Fractional odds from 1:1 to 2.5:1 depending on the rating gap between the two teams. | Win pays `bet × (1 + odds)`. |
 | **My Career** | One contract stake. You start on the bench and get subbed in for your "moments"; play well and your minutes grow. Each game earns a performance bonus (grade F to A+). | Bonuses accumulate and pay when the career ends by retirement, career-ending injury or being cut. Retire early to collect what you have banked. |
 | **Playoffs** | Entry stake into an 8-team single-elimination bracket. | Ladder: out in QF 0x · reach SF 1.2x · reach Final 3x · Champion 10x. Cash out between rounds at the current ladder value. |
-| **All-Star** | Entry stake into the 3-Point Contest, Dunk Contest or Skills Challenge against three league stars. You go first; the bots go after. | 1st 3x (dunk 4x), 2nd 1.5x (dunk 1.2x). |
+| **All-Star** | Entry stake into the 3-Point Contest, Slam Dunk Contest or Skills Challenge against three league stars, in the real formats (a first round, then a final). You go first in every round; the bots go after. | Champion 3x (dunk 4x), runner-up 1.5x (dunk 1.2x). |
 
 Twelve fictional teams with full 13-man rosters, procedural crests, home/away kits, arenas and play styles live in `src/data/teams.ts`.
 
@@ -34,7 +34,7 @@ Everything about money is decided by `src/core/casino/engine.ts` **before** a ro
 
 1. **Paytables** (`paytables.ts`) describe the *shape* of each mode's prize distribution. At resolution time the winning probabilities are scaled so that `Σ p_i × payout_i = RTP` exactly; the remaining mass is the losing outcome. Changing the RTP therefore never changes the feel of a mode, only how often it pays.
 2. **Match scripts**: for every game the engine draws win/lose, a final margin and a 16-point Brownian-bridge *margin trajectory* with lead changes. For career games it also draws the user's target stat line and minutes share; for contests it draws the user's finishing place.
-3. **The Director** (`src/match/director.ts`) runs inside every live match. It compares the live margin with the scripted trajectory and continuously tunes bot make-probabilities, steal/interception rates and rebounding. Early on the gain is low, so games feel loose and the player's inputs matter; late in the game the gain rises and, if the scripted winner is not in front, "force" mode makes the bots convert everything (or nothing) and press for steals so the user cannot stall the clock. In career mode the same loop steers teammates to feed (or freeze out) the user to land the scripted stat line. Contests are turn-based: the user plays first and the bots' scores are placed above or below per the ticket.
+3. **The Director** (`src/match/director.ts`) runs inside every live match. It compares the live margin with the scripted trajectory and continuously tunes bot make-probabilities, steal/interception rates and rebounding. Early on the gain is low, so games feel loose and the player's inputs matter; late in the game the gain rises and, if the scripted winner is not in front, "force" mode makes the bots convert everything (or nothing) and press for steals so the user cannot stall the clock. In career mode the same loop steers teammates to feed (or freeze out) the user to land the scripted stat line. Contests are turn-based: the user plays first in every round, then the bots' results are steered (relative to what the user actually scored) to land above or below per the ticket, including who reaches the final (`src/contests/plan.ts`).
 4. **Settlement**: quick game and playoff rounds settle on the on-court result (the director guarantees it matches the ticket; a `directorMisses` counter is exposed for monitoring). Career and contests settle on the ticket.
 5. **Provably fair**: the hash of `serverSeed:nonce` is shown before every round and the seed is revealed in the ledger after settlement (Settings → Round Ledger verifies it client-side).
 
@@ -73,6 +73,10 @@ The ball really changes hands: crossovers bounce in front, between-the-legs unde
 
 Near the rim, Shoot triggers a layup or dunk automatically. On offense the controlled player follows the ball; on defense it auto-switches to the man guarding the ball and can be switched manually.
 
+**Catch and shoot.** Hold Shoot while a pass is on its way and the jumper starts the moment you catch it; a press during the catch works too.
+
+**Possession rules.** Out-of-bounds balls go against whoever touched the ball last, including deflections: a defender who pokes the ball loose, tips a pass or fumbles a loose ball gets the blame, and a block counts as the blocker's touch. Once the ball handler crosses half court the offense cannot take the ball back over it (backcourt violation), and it has 8 seconds to get it across. A shot or a defensive touch resets both.
+
 **Boundaries and inbounds.** A soft wall along the lines holds the ball handler in bounds; only sprinting straight at the line for about a third of a second breaks through, and stepping on or over the line with the ball is a turnover. Every dead ball is restarted with a real throw-in from out of bounds. After a made basket the player nearest the ball inbounds from the baseline to the point guard (automatic, like 2K). After a violation, the ball going out, and at the start of each period, the small forward inbounds; on your own team's throw-ins you pick the pass yourself (Cross for a chest pass, Circle bounce, Triangle lob; aim with the stick). The clocks stay stopped until the throw-in is touched.
 
 ## Tech
@@ -86,6 +90,16 @@ Near the rim, Shoot triggers a layup or dunk automatically. On offense the contr
 ### Debug / test hooks
 
 `?debug=1` shows the director telemetry in the HUD. `?autopilot=ai` lets the bots drive the controlled player, `?autopilot=stall` makes the controlled player hold the ball and run (an adversarial test of the director), `?speed=N` runs N simulation steps per frame. `window.__match` exposes the live match.
+
+## All-Star Saturday
+
+All three contests are physics-based: every shot, pass and dunk is a real ball flight through the same rim, backboard and net collisions as the games, with no assists. `tests/contest.physics.test.ts` checks that clean releases go in from every contest spot and that the bots' planned misses never do.
+
+- **3-Point Contest** (current NBA format): 70 seconds; five racks around the arc, each with four 1-point balls and a 2-point money ball; one all-money rack of your choice; two 3-point deep balls between the wings and the top of the key; 40 points maximum. Hold Shoot and release in the green; several balls can be in the air at once. Top 3 go to the final round.
+- **Slam Dunk Contest**: two dunks a round, up to three attempts each, five judges scoring 6-10. Pick a dunk (two-hand, tomahawk, windmill, baseline reverse, 360, between the legs, free-throw line), press Shoot to take off as the ring closes and again to slam as you reach the rim. Takeoff spot and slam timing decide where the ball leaves your hand, and the rim decides the rest. Top 2 go to the final.
+- **Skills Challenge** (classic course): weave the chairs on the arrow side, hit the chest-pass target, make a layup at the far basket, then dribble back to the top of the key and make a three. Every pass and shot must go in before you move on. Fastest 2 go to the final.
+
+Bot turns can be watched at speed or skipped (Cross / A / Enter, or the SKIP button).
 
 ### Not implemented (yet)
 

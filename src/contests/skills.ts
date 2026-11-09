@@ -328,7 +328,7 @@ class SkillsChallenge {
       (this.markers[r.gate].material as THREE.MeshBasicMaterial).color.set(ok ? 0x38ff7a : 0xff4d4d);
       if (!ok) {
         r.penalties += 1;
-        this.scene.prompt.textContent = 'WRONG SIDE · +1s';
+        if (r.id === USER) this.scene.prompt.textContent = 'WRONG SIDE · +1s';
       } else audio.click();
       r.gate++;
       if (r.gate >= CHAIRS.length) {
@@ -383,13 +383,13 @@ class SkillsChallenge {
     const s = this.scene;
     if (hit) {
       audio.cheer(0.4);
-      s.prompt.textContent = 'ON TARGET!';
+      if (r.id === USER) s.prompt.textContent = 'ON TARGET!';
       r.stage = 'layup';
       r.busy = false;
       r.regain = 0.15;
       if (r.id === USER) s.sub.textContent = 'DRIVE AND PRESS SHOOT AT THE RIM';
     } else {
-      s.prompt.textContent = 'MISSED THE TARGET · AGAIN';
+      if (r.id === USER) s.prompt.textContent = 'MISSED THE TARGET · AGAIN';
       if (r.id !== USER) r.misses.pass = Math.max(0, r.misses.pass - 1);
       r.regain = 0.9;
     }
@@ -429,7 +429,7 @@ class SkillsChallenge {
         }
       } else {
         if (r.id !== USER) r.misses[kind] = Math.max(0, r.misses[kind] - 1);
-        s.prompt.textContent = kind === 'layup' ? 'MISSED THE LAYUP · AGAIN' : 'MISSED · GET IT AND SHOOT AGAIN';
+        if (r.id === USER) s.prompt.textContent = kind === 'layup' ? 'MISSED THE LAYUP · AGAIN' : 'MISSED · GET IT AND SHOOT AGAIN';
         r.regain = kind === 'layup' ? 0.8 : 1.3;
       }
     });

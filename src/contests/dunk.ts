@@ -418,8 +418,8 @@ class DunkContest {
     a.slammed = true;
     a.slamT = a.t;
     let hand = t.char.handWorld(new THREE.Vector3());
-    // Up to ~70ms late still counts as on time (human reaction); the judges mark it down.
-    if (a.handAtSlam && a.t - a.tSlam <= 0.075) hand = a.handAtSlam.clone();
+    // Up to ~100ms late still counts as on time (human reaction); the judges mark it down.
+    if (a.handAtSlam && a.t - a.tSlam <= 0.1) hand = a.handAtSlam.clone();
     a.slamOffset = Math.hypot(hand.x - this.rim.x, hand.z - this.rim.z);
     // The dunker stretches the arm (up to ~27cm) to get the ball over the rim, then throws it down.
     // Off by more than that and the ball meets iron: the rim decides.
