@@ -133,9 +133,13 @@ export class Character {
   /** Whole-body lean about the feet: forward (+) when accelerating, back when braking. */
   private pitch = 0;
   private pitchV = 0;
-  /** Whole-body bank into a turn (rotation about the forward axis). */
-  private bank = 0;
-  private bankV = 0;
+  /**
+   * Sideways shift of the hips (metres, + toward the r/+X side) under a turning force. The pelvis
+   * moves over the loaded leg and the legs angle to keep the feet planted; the torso and head stay
+   * upright (athletes don't roll their whole frame into a turn, that reads as a waddle).
+   */
+  private shift = 0;
+  private shiftV = 0;
   /** Hard cut: 1 at the plant, decaying; side +1 = cutting toward the r (+X) side. */
   private plant = 0;
   private plantSide = 0;
@@ -171,6 +175,9 @@ export class Character {
     this.built = buildBody(def, kit, teamById(kit.teamId), !!opts.lowDetail);
     this.bones = this.built.bones;
     this.hips = this.bones.hips;
+    // The spine undoes the pelvis's stride yaw about the vertical before it leans, so a forward-leaning
+    // torso doesn't swing side to side with every step.
+    this.bones.spine.rotation.order = 'YXZ';
     this.root.add(this.hips);
     for (const m of this.built.meshes) {
       this.root.add(m);
@@ -228,7 +235,8 @@ export class Character {
       target = blendPose(from, to, smooth(clamp01(this.switchMix)));
     } else target = this.generatePose();
     // Positive spine z tips the torso toward local -X, the -1 hand side.
-    target.bones.spine[2] -= this.lean;
+    // Dribble-move lean: mostly carried by the hips and legs (see sense); only a touch of shoulder dip.
+    target.bones.spine[2] -= this.lean * 0.3;
     target.bones.chest[1] += this.twist;
     target.hipsY += this.crouch;
     this.kineticPose(target);
@@ -249,7 +257,7 @@ export class Character {
     this.dribbleStep(dt);
   }
 
-  /** Read the forces on the body from how the root moved, and drive the lean/bank springs and cut/stop reactions. */
+  /** Read the forces on the body from how the root moved, and drive the lean and hip-shift springs and cut/stop reactions. */
   private sense(dt: number) {
     const p = this.root.position;
     if (!this.kInit || dt <= 0) {
@@ -296,21 +304,21 @@ export class Character {
     const turn = Math.hypot(ax, az);
     const grounded = this.current.jump < 0.03;
     const kin = grounded && GROUNDED_STATES.has(this.state) ? 1 : 0;
-    // Lean into the acceleration about the feet (a runner leans forward to speed up, back to brake,
-    // and banks into a curl like a cyclist), through an underdamped spring so it sways and settles.
+    // Lean into the acceleration about the feet (forward to speed up, back to brake), and shift the
+    // hips over the inside leg in a turn, through lightly underdamped springs so they settle cleanly.
     const pitchT = Math.max(-0.13, Math.min(0.17, af * 0.018)) * kin;
-    const bankT = Math.max(-0.22, Math.min(0.22, -al * 0.022)) * kin;
+    const shiftT = Math.max(-0.1, Math.min(0.1, al * 0.0055 + this.lean * 0.28)) * kin;
     const K = 150;
-    const C = 2 * Math.sqrt(K) * 0.5;
+    const C = 2 * Math.sqrt(K) * 0.65;
     this.pitchV += ((pitchT - this.pitch) * K - this.pitchV * C) * dt;
     this.pitch += this.pitchV * dt;
-    this.bankV += ((bankT - this.bank) * K - this.bankV * C) * dt;
-    this.bank += this.bankV * dt;
+    this.shiftV += ((shiftT - this.shift) * K - this.shiftV * C) * dt;
+    this.shift += this.shiftV * dt;
     // A hard change of direction at speed: plant the outside foot and push off it.
     if (kin > 0.5 && speed > 2.2 && turn > 10 && Math.abs(al) > 3 && this.plant < 0.25) {
       this.plant = 1;
       this.plantSide = Math.sign(al);
-      this.bankV -= this.plantSide * 1.1;
+      this.shiftV += this.plantSide * 0.45;
     }
     // Arriving from a run and stopping (spotting up, squaring to the ball): hop-stop and sink.
     if (kin > 0.5 && this.recentSpeed > 2.8 && speed < 0.8 && this.settle < 0.15) {
@@ -327,9 +335,20 @@ export class Character {
   private kineticPose(p: Pose) {
     if (!GROUNDED_STATES.has(this.state)) return;
     const b = p.bones;
-    // Keep the eyes level against the lean.
-    b.head[0] -= this.pitch * 0.7;
-    b.neck[2] += this.bank * 0.5;
+    // Braking: the legs brace out in front while the hips flex and keep the chest tall (the frame
+    // doesn't tip back as a block). Then keep the eyes level against whatever lean the torso has.
+    const brace = this.pitch < 0 ? -this.pitch * 0.65 : 0;
+    b.spine[0] += brace;
+    b.head[0] -= (this.pitch + brace) * 0.8;
+    // A turning load goes into the legs: the inside knee sinks and takes it, the hips drop a little.
+    const load = Math.max(-1, Math.min(1, this.shift / 0.08));
+    if (Math.abs(load) > 0.01) {
+      const inKnee = load > 0 ? 'rKnee' : 'lKnee';
+      const outKnee = load > 0 ? 'lKnee' : 'rKnee';
+      b[inKnee][0] += 0.32 * Math.abs(load);
+      b[outKnee][0] += 0.12 * Math.abs(load);
+      p.hipsY -= 0.04 * Math.abs(load);
+    }
     // Driving forward: lower, longer, arms pumping harder.
     if (this.drive > 0.01) {
       const d = this.drive;
@@ -516,10 +535,16 @@ export class Character {
     };
     // Spread the authored torso bend over spine + chest, and the head turn over neck + head.
     set(B.spine, b.spine, 0.55);
+    B.spine.rotation.y -= p.hipsYaw;
     set(B.chest, b.spine, 0.45, b.chest);
     set(B.neck, b.head, 0.4, b.neck);
     set(B.head, b.head, 0.6);
     for (const k of ['lShoulder', 'lElbow', 'lWrist', 'rShoulder', 'rElbow', 'rWrist', 'lHip', 'lKnee', 'rHip', 'rKnee'] as const) set(B[k], b[k], 1);
+    // The hips shift sideways over the loaded leg; both legs angle back so the feet stay where they are.
+    const hh = this.standHipY + p.hipsY;
+    const legComp = -Math.atan2(this.shift, hh);
+    B.lHip.rotation.z += legComp;
+    B.rHip.rotation.z += legComp;
     // Ankles keep the sole flat while grounded and point the toes in the air.
     const air = Math.min(1, Math.max(0, (p.jump - 0.03) / 0.15));
     for (const side of ['l', 'r'] as const) {
@@ -528,12 +553,12 @@ export class Character {
       const extra = b[`${side}Ankle`];
       const flat = -(hip[0] + knee[0]);
       const pitch = flat * (1 - air) + 0.55 * air + extra[0] - this.pitch * (1 - air);
-      B[`${side}Ankle`].rotation.set(Math.min(0.95, Math.max(-0.75, pitch)), extra[1], -hip[2] * (1 - air) + extra[2] - this.bank * (1 - air));
+      B[`${side}Ankle`].rotation.set(Math.min(0.95, Math.max(-0.75, pitch)), extra[1], -(hip[2] + legComp) * (1 - air) + extra[2]);
     }
-    // The whole body leans/banks about the feet: tilt the hips and slide them so the feet stay put.
-    const hh = this.standHipY + p.hipsY;
-    this.hips.rotation.set(this.pitch, p.hipsYaw, this.bank);
-    this.hips.position.set(-hh * Math.sin(this.bank), hh * Math.cos(this.bank) * Math.cos(this.pitch) + p.jump, hh * Math.sin(this.pitch));
+    // Forward/back lean is about the feet (tilt the hips forward and slide them so the feet stay put);
+    // there is no sideways roll of the frame.
+    this.hips.rotation.set(this.pitch, p.hipsYaw, 0);
+    this.hips.position.set(this.shift, hh * Math.cos(this.pitch) + p.jump, hh * Math.sin(this.pitch));
     this.shadowBlob.scale.setScalar(1 - Math.min(0.6, p.jump * 0.6));
     (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.25 - Math.min(0.15, p.jump * 0.2);
   }
@@ -565,15 +590,16 @@ export class Character {
       b.rHip = [s * 0.75 * amp, 0, 0.03];
       b.lKnee = [(0.25 + 0.9 * Math.max(0, -c)) * amp + 0.08, 0, 0];
       b.rKnee = [(0.25 + 0.9 * Math.max(0, c)) * amp + 0.08, 0, 0];
-      b.spine = [0.08 + 0.22 * amp, Math.sin(ph) * 0.06 * amp, 0];
-      // Shoulders counter-rotate against the hips; the head stays steady.
-      b.chest = [0, -s * 0.2 * amp, 0];
+      b.spine = [0.08 + 0.22 * amp, 0, 0];
+      // The pelvis turns with the stride; the spine takes it out, the shoulders counter-rotate a
+      // little against it (driven by the arm swing) and the neck keeps the head pointed straight on.
       p.hipsYaw = s * 0.1 * amp;
-      b.neck = [0, s * 0.08 * amp, 0];
+      b.chest = [0, -s * 0.07 * amp, 0];
+      b.neck = [0, s * 0.07 * amp, 0];
       // Push off through the toes at the back of each stride.
       b.lAnkle = [0.35 * Math.max(0, s) * amp, 0, 0];
       b.rAnkle = [0.35 * Math.max(0, -s) * amp, 0, 0];
-      p.hipsY = -0.02 - Math.abs(Math.sin(ph)) * 0.035 * amp - 0.05 * amp;
+      p.hipsY = -0.02 - Math.abs(Math.sin(ph)) * 0.026 * amp - 0.05 * amp;
     };
     const idleArms = () => {
       b.lShoulder = [0.05, 0, 0.14];
