@@ -128,6 +128,8 @@ export class App {
   /** Background highlight reel: two random teams, all bots, cinematic camera, CSS film filter. */
   startReel() {
     if (this.mode === 'reel') return;
+    // Layout tests: no background match.
+    if (new URLSearchParams(location.search).has('noreel')) return;
     this.stopScene();
     const rng = new Rng(`reel:${Date.now()}`);
     const a = rng.pick(TEAMS);

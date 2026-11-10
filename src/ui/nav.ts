@@ -180,6 +180,11 @@ export class MenuNav {
         }
       }
     }
+    // Nothing above / below (a single row of tiles): step along the row instead.
+    if (!best && (dir === 'down' || dir === 'up')) {
+      this.move(dir === 'down' ? 'right' : 'left', items);
+      return;
+    }
     if (best) {
       this.current = best;
       audio.click();

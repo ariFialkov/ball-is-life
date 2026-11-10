@@ -3,6 +3,8 @@ import { store } from '../../app/store.ts';
 import { Match, type MatchOptions } from '../../match/match.ts';
 import { Hud } from '../../match/hud.ts';
 import { audio } from '../../engine/audio.ts';
+import { ReplayRecorder, type Clip } from '../../match/replay.ts';
+import * as THREE from 'three';
 
 export interface GameResult {
   scores: [number, number];
@@ -83,14 +85,83 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
     simTimer = 1.6;
   };
 
-  // Career: start on the bench and fast-forward to the first moment.
-  if (opts.matchOptions.career) {
-    match.subUserOut();
-    startSim('WARMING UP');
-    match.fastForwardToNextMoment();
-    (simOverlay!.querySelector('.scoreline') as HTMLElement).textContent = `${match.scores[0]} – ${match.scores[1]}`;
-    pendingBanner = `${opts.matchOptions.career.player.last.toUpperCase()} CHECKS IN`;
-  }
+  // Broadcast presentation (the open, replays, play of the game) for real play. Automated test
+  // drivers (webdriver, autopilot, sped-up sims) skip it unless ?broadcast asks for it.
+  const broadcast = new URLSearchParams(location.search).has('broadcast') || (!navigator.webdriver && !app.autopilot && app.timeScale === 1);
+  const rec = new ReplayRecorder(match);
+  type Highlight = { t: number; value: number; caption: string };
+  let stage: 'open' | 'play' | 'replay' = 'play';
+  let stageT = 0;
+  let replay: { clip: Clip; t: number; focus: THREE.Vector3; angle: number; restore: Float32Array; after: 'play' | 'finish' } | null = null;
+  let lastReplayAt = -99;
+  let finishWait = false;
+  let pending: Highlight | null = null;
+  let bestPending: Highlight | null = null;
+  let best: { clip: Clip; value: number; caption: string } | null = null;
+  const tmpV = new THREE.Vector3();
+
+  const beginPlay = () => {
+    stage = 'play';
+    hud.showOpen(match, false);
+    app.touch.setVisible(showTouch);
+    app.camera.mode = store.data.settings.camera;
+    app.camera.attackDir = match.attackDir(match.possession);
+    app.camera.prime(match.ball.pos);
+    // Career: start on the bench and fast-forward to the first moment.
+    if (opts.matchOptions.career) {
+      match.subUserOut();
+      startSim('WARMING UP');
+      match.fastForwardToNextMoment();
+      (simOverlay!.querySelector('.scoreline') as HTMLElement).textContent = `${match.scores[0]} – ${match.scores[1]}`;
+      pendingBanner = `${opts.matchOptions.career.player.last.toUpperCase()} CHECKS IN`;
+    }
+  };
+  if (broadcast) {
+    stage = 'open';
+    hud.showOpen(match, true);
+    app.touch.setVisible(false);
+    app.camera.mode = 'manual';
+    app.camera.manualRate = 2.2;
+    app.camera.manualPos.set(10, 7, 16);
+    app.camera.manualLook.set(0, 1.4, 0);
+    app.camera.snap();
+  } else beginPlay();
+
+  const anyPress = () => {
+    const p = app.input.state.pressed;
+    return p.a || p.b || p.x || p.y || p.confirm || p.back || p.sprint;
+  };
+
+  /** Play back a clip with a slow, orbiting low camera and the letterbox. */
+  const startReplay = (clip: Clip, caption: string, after: 'play' | 'finish') => {
+    stage = 'replay';
+    const mid = clip.frames[Math.floor(clip.frames.length * 0.7)];
+    const focus = rec.ballIn(mid, new THREE.Vector3());
+    replay = { clip, t: 0, focus, angle: Math.atan2(focus.z || 0.01, -Math.sign(focus.x || 1) * 3), restore: rec.snapshot(), after };
+    hud.showReplay(true, caption);
+    app.touch.setVisible(false);
+    app.camera.mode = 'manual';
+    app.camera.manualRate = 6;
+    lastReplayAt = rec.time;
+  };
+  const endReplay = () => {
+    if (!replay) return;
+    rec.apply(replay.restore);
+    const after = replay.after;
+    replay = null;
+    hud.showReplay(false);
+    app.touch.setVisible(showTouch);
+    stage = 'play';
+    app.camera.mode = store.data.settings.camera;
+    app.camera.prime(match.ball.pos);
+    if (after === 'finish') finishGame();
+  };
+  const finishGame = () => {
+    const result: GameResult = { scores: [match.scores[0], match.scores[1]], userWon: match.scores[0] > match.scores[1], match };
+    audio.cheer(0.5);
+    destroy();
+    opts.onFinish(result);
+  };
 
   const destroy = () => {
     hud.destroy();
@@ -102,10 +173,39 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
 
   return {
     el,
-    update(dt) {
-      if (app.input.state.pressed.pause) {
+    update(dt, t) {
+      if (app.input.state.pressed.pause && stage === 'play') {
         if (paused) closeDialog();
         else openPause();
+      }
+      // The open: a slow orbit of the arena under the matchup card.
+      if (stage === 'open') {
+        stageT += dt;
+        const a = 0.35 + stageT * 0.28;
+        app.camera.manualPos.set(Math.sin(a) * 15, 6.4 - stageT * 0.6, Math.cos(a) * 13);
+        app.camera.manualLook.set(0, 1.4, 0);
+        app.camera.update(dt, app.camera.manualLook, t);
+        for (const x of match.athletes) if (x.onCourt) x.char.update(dt, 0);
+        if (stageT > 4.6 || (stageT > 0.4 && anyPress())) beginPlay();
+        return;
+      }
+      // Replays: frames from the recording, slowed down, with a low orbiting camera.
+      if (stage === 'replay' && replay) {
+        replay.t += dt * 0.5;
+        const c = replay.clip;
+        const at = c.times[0] + replay.t;
+        let k = c.times.findIndex((x) => x >= at);
+        if (k < 0) k = c.times.length - 1;
+        const f = c.frames[k];
+        rec.apply(f);
+        const ball = rec.ballIn(f, tmpV);
+        replay.focus.lerp(ball, Math.min(1, dt * 2.5));
+        const ang = replay.angle + replay.t * 0.45;
+        app.camera.manualPos.set(replay.focus.x + Math.cos(ang) * 5.6, 1.5 + Math.max(0, ball.y - 2) * 0.4, replay.focus.z + Math.sin(ang) * 5.6);
+        app.camera.manualLook.set(replay.focus.x, THREE.MathUtils.clamp(replay.focus.y, 1.1, 3.2), replay.focus.z);
+        app.camera.update(dt, app.camera.manualLook, t);
+        if (at >= c.times[c.times.length - 1] || (replay.t > 0.3 && anyPress())) endReplay();
+        return;
       }
       if (simOverlay) {
         simTimer -= dt;
@@ -135,6 +235,42 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
       for (let i = 0; i < app.timeScale; i++) match.update(Math.min(dt, 1 / 30));
       const events = match.takeEvents();
       hud.update(dt, match, events);
+      if (broadcast) {
+        rec.capture(dt);
+        // Highlights: made dunks, threes and blocks (clutch time and our team count for more).
+        for (const e of events) {
+          const who = e.athlete ? `${e.athlete.def.name.toUpperCase()}` : '';
+          let value = 0;
+          let caption = '';
+          if (e.type === 'dunk' && e.text === 'THROWS IT DOWN!') [value, caption] = [3, `${who} THROWS IT DOWN`];
+          else if (e.type === 'score' && e.points === 3) [value, caption] = [2, `${who} FROM DOWNTOWN`];
+          else if (e.type === 'block') [value, caption] = [2.5, `${who} SENDS IT BACK`];
+          if (!value) continue;
+          if (match.period >= 4) value += 1;
+          if (e.team === 0) value += 0.5;
+          // Live replays only for the big ones (any dunk or block, our threes, clutch threes).
+          const live = value >= 2.5;
+          const hl = { t: rec.time, value, caption };
+          if (live && (!pending || value >= pending.value)) pending = hl;
+          if (!bestPending || value >= bestPending.value) bestPending = hl;
+        }
+        if (bestPending && rec.time >= bestPending.t + 1.0) {
+          const clip = rec.clip(bestPending.t - 2.2, bestPending.t + 1.0);
+          if (clip && (!best || bestPending.value >= best.value)) best = { clip, value: bestPending.value, caption: bestPending.caption };
+          bestPending = null;
+        }
+        // Replay the highlight in the next dead ball (not too often).
+        if (pending && (rec.time - pending.t > 3.2 || match.phase === 'period')) pending = null;
+        if (pending && rec.time - pending.t > 1.0 && (match.phase === 'dead' || match.phase === 'inbound') && !hud.graphicShowing && !simOverlay && rec.time - lastReplayAt > 40 && !match.finished) {
+          const clip = rec.clip(pending.t - 2.2, pending.t + 0.9);
+          const cap = pending.caption;
+          pending = null;
+          if (clip) {
+            startReplay(clip, cap, 'play');
+            return;
+          }
+        }
+      }
       // Career: an injury ends the player's night; the rest of the game is simulated.
       if (opts.matchOptions.career && match.userInjured && !injurySimmed && match.phase !== 'end') {
         injurySimmed = true;
@@ -160,10 +296,13 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
       }
       if (match.finished && !finished) {
         finished = true;
-        const result: GameResult = { scores: [match.scores[0], match.scores[1]], userWon: match.scores[0] > match.scores[1], match };
-        audio.cheer(0.5);
-        destroy();
-        opts.onFinish(result);
+        finishWait = true;
+      }
+      // Let the FINAL graphic show, then the play of the game, then the results.
+      if (finishWait && (!broadcast || !hud.graphicShowing)) {
+        finishWait = false;
+        if (broadcast && best) startReplay(best.clip, `PLAY OF THE GAME · ${best.caption}`, 'finish');
+        else finishGame();
       }
     },
     destroy() {

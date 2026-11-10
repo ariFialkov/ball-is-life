@@ -3,7 +3,7 @@ import { casino, fmtCredits } from '../../app/casino.ts';
 import { store } from '../../app/store.ts';
 import { TEAMS, teamById, makeCareerPlayer, type PlayerDef, type TeamDef } from '../../data/teams.ts';
 import { CONTEST_PAYTABLES } from '../../core/casino/paytables.ts';
-import { betPanel, fairnessBlock, logoImg, topbar } from '../common.ts';
+import { ART, betPanel, fineHash, frame, logoImg } from '../common.ts';
 import { threePointContest } from '../../contests/three.ts';
 import { dunkContest } from '../../contests/dunk.ts';
 import { skillsChallenge } from '../../contests/skills.ts';
@@ -24,17 +24,19 @@ const CONTESTS: { id: ContestId; name: string; blurb: string; rating: keyof Play
 
 export function allStarScreen(app: App): Screen {
   app.startReel();
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'ALL-STAR SATURDAY', kicker: `REPRESENTING THE ${teamById(store.data.favTeam).name.toUpperCase()} · CHANGE TEAM IN QUICK GAME`, onBack: () => app.show(menuScreen(app)), split: true });
   let contest: ContestId = 'three';
   const team = teamById(store.data.favTeam);
   const bet = betPanel({ label: 'ENTRY STAKE' });
-  const cards = h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fill,minmax(240px,1fr))' });
+  const cards = h('div', { class: 'contest-cards' });
   const pay = h('div', { class: 'row' });
   const enter = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'ENTER CONTEST');
   const render = () => {
     cards.innerHTML = '';
     for (const c of CONTESTS) {
-      const card = h('div', { class: `team-card${c.id === contest ? ' selected' : ''}`, style: `--c:${team.colors.primary}` }, h('div', { class: 'name' }, c.name), h('div', { class: 'city' }, c.blurb));
+      const art = h('div', { class: 'cc-art' });
+      art.innerHTML = c.id === 'dunk' ? ART.star : c.id === 'three' ? `<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#ff7a1a" stroke="#fff" stroke-width="4"/><path d="M10 50h80M50 10v80M22 22c16 14 16 42 0 56M78 22c-16 14-16 42 0 56" stroke="#2a1000" stroke-width="4" fill="none"/></svg>` : ART.trophy;
+      const card = h('div', { class: `team-card wide${c.id === contest ? ' selected' : ''}`, style: `--c:${c.id === 'three' ? '#ff7a1a' : c.id === 'dunk' ? '#1446ff' : '#00a86b'}` }, art, h('div', { class: 'name' }, c.name), h('div', { class: 'city' }, c.blurb));
       card.onclick = () => {
         audio.click();
         contest = c.id;
@@ -53,15 +55,14 @@ export function allStarScreen(app: App): Screen {
     const ticket = casino.placeBet(contest, bet.bet, { team: team.id });
     runContest(app, ticket, contest, team);
   };
-  el.append(
-    topbar('ALL-STAR SATURDAY', () => app.show(menuScreen(app))),
-    h('div', { class: 'subtitle' }, `REPRESENTING ${team.city.toUpperCase()} ${team.name.toUpperCase()} · CHANGE TEAM IN QUICK GAME`),
+  f.body.append(
     cards,
-    h('div', { class: 'panel' }, h('h3', {}, 'PAYOUT · 4 COMPETITORS'), pay, h('div', { class: 'muted', style: 'font-size:13px;margin:6px 0' }, 'You go first in every round, then three league stars. Win the final or finish runner-up to cash.'), bet.el, enter),
+    h('div', { class: 'panel gold' }, h('h3', {}, 'PAYOUT · 4 COMPETITORS'), pay, h('div', { class: 'muted', style: 'font-size:var(--fs-s);margin:6px 0' }, 'You go first in every round, then three league stars. Win the final or finish runner-up to cash.'), bet.el),
   );
+  f.foot.append(enter);
   render();
   bet.el.addEventListener('click', () => render());
-  return { el, keepReel: true };
+  return { el: f.el, keepReel: true };
 }
 
 function pickBots(contest: ContestId, exclude: TeamDef, seed: string): { def: PlayerDef; team: TeamDef }[] {
@@ -113,7 +114,7 @@ function ordinal(n: number) {
   return `${n}${['ST', 'ND', 'RD', 'TH'][Math.min(3, n - 1)]}`;
 }
 
-function contestResults(app: App, o: { r: ContestResult; info: string; payout: number; bet: number; mult: number; hash: string }): Screen {
+export function contestResults(app: App, o: { r: ContestResult; info: string; payout: number; bet: number; mult: number; hash: string }): Screen {
   app.startReel();
   const el = h('div', { class: 'screen center fade-in' });
   const r = o.r;
@@ -128,19 +129,15 @@ function contestResults(app: App, o: { r: ContestResult; info: string; payout: n
   back.onclick = () => app.show(allStarScreen(app));
   const menu = h('button', { class: 'btn' }, 'MAIN MENU');
   menu.onclick = () => app.show(menuScreen(app));
-  el.append(
-    h(
-      'div',
-      { class: 'panel', style: 'text-align:center' },
-      h('div', { class: 'subtitle' }, o.info),
-      h('div', { class: 'title big' }, r.place === 1 ? 'CHAMPION' : `${ordinal(r.place)} PLACE`),
-      h('div', { class: `payout ${won ? 'win' : 'lose'}` }, won ? `+${fmtCredits(o.payout)} CR` : 'NO RETURN'),
-      h('div', { class: 'muted' }, `STAKE ${fmtCredits(o.bet)} · MULTIPLIER ${o.mult.toFixed(2)}x${r.tiebreak ? ' · DECIDED BY TIEBREAKER' : ''}`),
-    ),
-    h('div', { class: 'panel', style: 'overflow-x:auto' }, table),
-    h('div', { class: 'row', style: 'justify-content:center' }, back, menu),
-    h('div', { class: 'panel' }, fairnessBlock(o.hash)),
+  const card = h(
+    'div',
+    { class: 'final-card' },
+    h('div', { class: 'final-banner' }, h('div', { class: 'kicker' }, o.info), h('div', { class: 'title huge' }, r.place === 1 ? 'CHAMPION' : `${ordinal(r.place)} PLACE`)),
+    h('div', { class: 'final-strip' }, h('div', { class: `payout ${won ? 'win' : 'lose'}` }, won ? `+${fmtCredits(o.payout)} CR` : 'NO RETURN'), h('div', { class: 'chip' }, `STAKE ${fmtCredits(o.bet)} · ${o.mult.toFixed(2)}x${r.tiebreak ? ' · TIEBREAKER' : ''}`)),
+    h('div', { class: 'panel volt fill' }, h('h3', {}, 'FINAL STANDINGS'), table),
+    h('div', { class: 'frame-foot' }, fineHash(o.hash), menu, back),
   );
+  el.append(card);
   if (won) audio.cash();
   return { el, keepReel: true };
 }

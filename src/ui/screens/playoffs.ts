@@ -4,7 +4,7 @@ import { store, type PlayoffSave } from '../../app/store.ts';
 import { TEAMS, teamById, type TeamDef } from '../../data/teams.ts';
 import { PLAYOFF_LADDER, PLAYOFF_ROUND_NAMES } from '../../core/casino/paytables.ts';
 import { Rng } from '../../core/rng.ts';
-import { betPanel, teamCard, topbar, fairnessBlock } from '../common.ts';
+import { betPanel, fineHash, frame, logoImg, teamCard } from '../common.ts';
 import { gameScreen } from './game.ts';
 import { resultsScreen } from './results.ts';
 import { menuScreen } from './menu.ts';
@@ -25,7 +25,7 @@ export function playoffsScreen(app: App): Screen {
 }
 
 function setupScreen(app: App): Screen {
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'PLAYOFFS', kicker: '8-TEAM BRACKET · SINGLE ELIMINATION', onBack: () => app.show(menuScreen(app)), split: true });
   let mine: TeamDef = teamById(store.data.favTeam);
   app.showTeam(mine);
   const grid = h('div', { class: 'grid' });
@@ -60,15 +60,15 @@ function setupScreen(app: App): Screen {
     store.save();
     app.show(bracketScreen(app, save));
   };
-  el.append(
-    topbar('PLAYOFFS', () => app.show(menuScreen(app))),
-    h('div', { class: 'subtitle' }, 'CHOOSE YOUR TEAM · 8-TEAM BRACKET · SINGLE ELIMINATION'),
+  f.body.append(
+    h('div', { class: 'title mid' }, 'CHOOSE YOUR TEAM'),
     grid,
-    h('div', { class: 'panel' }, h('h3', {}, 'PRIZE LADDER'), ladder, h('div', { class: 'muted', style: 'font-size:13px;margin:6px 0' }, 'Cash out between rounds at the current ladder value, or play on for the championship.'), bet.el, start),
+    h('div', { class: 'panel gold' }, h('h3', {}, 'PRIZE LADDER'), ladder, h('div', { class: 'muted', style: 'font-size:var(--fs-s);margin:6px 0' }, 'Cash out between rounds at the ladder value, or play on for the title.'), bet.el),
   );
+  f.foot.append(start);
   render();
   bet.el.addEventListener('click', () => render());
-  return { el };
+  return { el: f.el };
 }
 
 /** Simulated result between two bot teams. */
@@ -104,7 +104,7 @@ function resolveBotGames(save: PlayoffSave, round: number) {
 
 function bracketScreen(app: App, save: PlayoffSave): Screen {
   app.startReel();
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'THE BRACKET', kicker: 'PLAYOFFS', onBack: () => app.show(menuScreen(app)) });
   const mine = teamById(save.teamId);
   const ticket = save.ticket;
   if (ticket.outcome.kind !== 'playoffs') throw new Error('bad ticket');
@@ -125,7 +125,10 @@ function bracketScreen(app: App, save: PlayoffSave): Screen {
         const t = id === '?' ? null : teamById(id);
         const w = res && res.winner === id;
         const score = res ? (res.home === id ? res.score[0] : res.score[1]) : '';
-        return h('div', { class: `${w ? 'w' : ''} ${id === save.teamId ? 'you' : ''}` }, h('span', {}, t ? `${t.abbr} (${t.ovr})` : 'TBD'), h('span', {}, String(score)));
+        const name = h('span', {});
+        if (t) name.append(logoImg(t, 20), `${t.abbr} ${t.ovr}`);
+        else name.append('TBD');
+        return h('div', { class: `${w ? 'w' : ''} ${id === save.teamId ? 'you' : ''}` }, name, h('span', {}, String(score)));
       };
       col.append(h('div', { class: 'mu' }, line(a), line(b)));
     }
@@ -137,7 +140,7 @@ function bracketScreen(app: App, save: PlayoffSave): Screen {
   if (champ) ladderCol.append(h('div', { class: 'w' }, h('span', {}, 'CHAMPION'), h('span', {}, teamById(champ).abbr)));
   bracket.append(ladderCol);
 
-  const actions = h('div', { class: 'row' });
+  const actions = f.foot;
   const cashValue = PLAYOFF_LADDER[round] * ticket.bet;
   if (opp) {
     const play = h('button', { class: 'btn primary' }, `PLAY ${PLAYOFF_ROUND_NAMES[round].toUpperCase()} VS ${opp.abbr}`);
@@ -170,9 +173,10 @@ function bracketScreen(app: App, save: PlayoffSave): Screen {
     }
   }
   const strip = `${mine.city.toUpperCase()} ${mine.name.toUpperCase()} · SEED ${save.bracket.indexOf(save.teamId) + 1} · STAKE ${fmtCredits(ticket.bet)} CR`;
-  el.append(topbar('PLAYOFFS', () => app.show(menuScreen(app))), h('div', { class: 'subtitle' }, strip), h('div', { class: 'panel' }, bracket), actions, h('div', { class: 'panel' }, fairnessBlock(ticket.fairnessHash)));
+  f.body.append(h('div', { class: 'kicker' }, strip), h('div', { class: 'panel fill' }, bracket));
+  actions.prepend(fineHash(ticket.fairnessHash));
   void outcome;
-  return { el, keepReel: true };
+  return { el: f.el, keepReel: true };
 }
 
 function playRound(app: App, save: PlayoffSave, mine: TeamDef, opp: TeamDef, round: number) {

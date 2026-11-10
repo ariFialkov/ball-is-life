@@ -3,11 +3,11 @@ import { casino, fmtCredits } from '../../app/casino.ts';
 import { store } from '../../app/store.ts';
 import { audio } from '../../engine/audio.ts';
 import { hashHex } from '../../core/rng.ts';
-import { demoFundsButton, topbar } from '../common.ts';
+import { demoFundsButton, frame } from '../common.ts';
 import { menuScreen } from './menu.ts';
 
-export function settingsScreen(app: App): Screen {
-  const el = h('div', { class: 'screen fade-in' });
+export function settingsScreen(app: App, tab = 0): Screen {
+  const f = frame({ title: 'SETTINGS', kicker: 'GAMEPLAY · CONTROLS · OPERATOR', onBack: () => app.show(menuScreen(app)) });
   const s = store.data.settings;
   const toggle = <T extends string | number>(label: string, options: { v: T; l: string }[], get: () => T, set: (v: T) => void) => {
     const row = h('div', { class: 'toggle' });
@@ -29,7 +29,7 @@ export function settingsScreen(app: App): Screen {
   };
   const gameplay = h(
     'div',
-    { class: 'panel' },
+    { class: 'panel fill' },
     h('h3', {}, 'GAMEPLAY'),
     toggle('Quarter length', [{ v: 60, l: '1 MIN' }, { v: 120, l: '2 MIN' }, { v: 180, l: '3 MIN' }], () => s.quarterLength, (v) => (s.quarterLength = v)),
     toggle('Camera', [{ v: '2k', l: '2K CAM' }, { v: 'broadcast', l: 'BROADCAST' }], () => s.camera, (v) => (s.camera = v)),
@@ -39,7 +39,7 @@ export function settingsScreen(app: App): Screen {
 
   const controls = h(
     'div',
-    { class: 'panel' },
+    { class: 'panel volt fill scroll-y' },
     h('h3', {}, 'CONTROLS (2K LAYOUT)'),
     h(
       'div',
@@ -80,17 +80,17 @@ export function settingsScreen(app: App): Screen {
   };
   const operator = h(
     'div',
-    { class: 'panel' },
+    { class: 'panel gold fill' },
     h('h3', {}, 'OPERATOR · RTP CONFIGURATION'),
     h('div', { class: 'muted', style: 'font-size:13px' }, 'Every round is resolved by the deterministic outcome engine before tip-off. The bots are then steered to reproduce that result on the court. All six modes pay exactly this return-to-player in expectation.'),
     h('div', { class: 'row' }, rtpLabel, h('div', { class: 'grow' }, rtpSlider)),
     h('div', { class: 'kv' }, h('b', {}, 'Server seed'), seedInput, h('b', {}, 'Min bet'), minBet, h('b', {}, 'Max bet'), maxBet),
     h('div', { class: 'kv' }, h('b', {}, 'Rounds'), h('span', {}, String(totals.rounds)), h('b', {}, 'Wagered'), h('span', {}, fmtCredits(totals.wagered)), h('b', {}, 'Returned'), h('span', {}, fmtCredits(totals.returned)), h('b', {}, 'Observed RTP'), h('span', {}, actual)),
-    h('div', { class: 'row' }, demoFundsButton(() => app.show(settingsScreen(app))), resetBtn),
+    h('div', { class: 'row' }, demoFundsButton(() => app.show(settingsScreen(app, 2))), resetBtn),
   );
 
   // Ledger with provably-fair verification.
-  const ledger = h('div', { class: 'panel' }, h('h3', {}, 'ROUND LEDGER · PROVABLY FAIR'));
+  const ledger = h('div', { class: 'panel fill scroll-y' }, h('h3', {}, 'ROUND LEDGER · PROVABLY FAIR'));
   if (store.data.ledger.length === 0) ledger.append(h('div', { class: 'muted' }, 'No rounds yet.'));
   for (const e of store.data.ledger.slice(0, 25)) {
     const ok = hashHex(e.revealSeed) === e.fairnessHash;
@@ -104,8 +104,26 @@ export function settingsScreen(app: App): Screen {
       ),
     );
   }
-  el.append(topbar('SETTINGS', () => app.show(menuScreen(app))), gameplay, controls, operator, ledger);
-  return { el, keepReel: true };
+  // One section at a time, picked from the tabs, so the screen never needs to scroll.
+  const panels = [gameplay, controls, operator, ledger];
+  const names = ['GAMEPLAY', 'CONTROLS', 'OPERATOR', 'LEDGER'];
+  const tabs = h('div', { class: 'tabs' });
+  const show = (i: number) => {
+    tab = i;
+    tabs.innerHTML = '';
+    names.forEach((n, k) => {
+      const b = h('button', { class: `btn small${k === i ? ' active' : ''}`, 'data-nav-pick': '' }, n);
+      b.onclick = () => {
+        audio.click();
+        show(k);
+      };
+      tabs.append(b);
+    });
+    panels.forEach((p, k) => (p.style.display = k === i ? '' : 'none'));
+  };
+  f.body.append(tabs, ...panels);
+  show(tab);
+  return { el: f.el, keepReel: true };
 }
 
 function dl(items: [string, string][]): HTMLElement {

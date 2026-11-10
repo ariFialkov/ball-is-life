@@ -82,6 +82,15 @@ export class Ball {
   }
 
   /** Update visual position when held (position set externally). */
+  /** Draw the ball somewhere without touching its physical state (replays). */
+  showAt(x: number, y: number, z: number, rx = this.mesh.rotation.x, rz = this.mesh.rotation.z) {
+    this.mesh.position.set(x, y, z);
+    this.mesh.rotation.x = rx;
+    this.mesh.rotation.z = rz;
+    this.shadow.position.set(x, 0.01, z);
+    (this.shadow.material as THREE.MeshBasicMaterial).opacity = Math.max(0.05, 0.3 - y * 0.05);
+  }
+
   syncVisual() {
     this.mesh.position.copy(this.pos);
     this.shadow.position.set(this.pos.x, 0.01, this.pos.z);

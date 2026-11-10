@@ -2,7 +2,7 @@ import { App, h, type Screen } from '../../app/app.ts';
 import { casino, fmtCredits } from '../../app/casino.ts';
 import { store, type CareerGameLog, type CareerSave } from '../../app/store.ts';
 import { TEAMS, teamById, makeCareerPlayer, type Position, type TeamDef } from '../../data/teams.ts';
-import { betPanel, fairnessBlock, teamCard, topbar } from '../common.ts';
+import { ART, betPanel, fineHash, frame, logoImg, teamCard } from '../common.ts';
 import { gameScreen } from './game.ts';
 import { resultsScreen } from './results.ts';
 import { menuScreen } from './menu.ts';
@@ -55,13 +55,13 @@ function pct(m: number, a: number) {
 // Create a player
 
 function createScreen(app: App): Screen {
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'MY CAREER', kicker: 'CREATE YOUR PLAYER', onBack: () => app.show(menuScreen(app)), split: true });
   let team: TeamDef = teamById(store.data.favTeam);
   let pos: Position = 'PG';
   app.showTeam(team);
   const first = h('input', { type: 'text', placeholder: 'First name', maxlength: '14', value: store.data.playerFirst ?? '', autocomplete: 'off' }) as HTMLInputElement;
   const last = h('input', { type: 'text', placeholder: 'Last name', maxlength: '16', value: store.data.playerLast ?? '', autocomplete: 'off' }) as HTMLInputElement;
-  const hint = h('div', { class: 'muted', style: 'font-size:12px' }, 'Both names are required: they go on your jersey, the box score and every call.');
+  const hint = h('div', { class: 'muted desc', style: 'font-size:12px' }, 'Both names are required: they go on your jersey, the box score and every call.');
   const posRow = h('div', { class: 'toggle' });
   const renderPos = () => {
     posRow.innerHTML = '';
@@ -116,27 +116,22 @@ function createScreen(app: App): Screen {
     store.save();
     app.show(hubScreen(app, save));
   };
-  el.append(
-    topbar('MY CAREER', () => app.show(menuScreen(app))),
-    h('div', { class: 'panel' }, h('h3', {}, 'CREATE YOUR PLAYER'), h('div', { class: 'row' }, h('div', { class: 'grow' }, first), h('div', { class: 'grow' }, last), posRow), hint),
-    h('div', { class: 'subtitle' }, 'CHOOSE YOUR TEAM'),
+  f.body.append(
+    h('div', { class: 'panel' }, h('h3', {}, 'YOUR PLAYER'), h('div', { class: 'row nowrap' }, h('div', { class: 'grow' }, first), h('div', { class: 'grow' }, last)), h('div', { class: 'row', style: 'margin-top:6px' }, posRow, hint)),
+    h('div', { class: 'title mid' }, 'CHOOSE YOUR TEAM'),
     grid,
     h(
       'div',
-      { class: 'panel' },
-      h('h3', {}, 'THE CONTRACT'),
-      h(
-        'div',
-        { class: 'muted', style: 'font-size:13px;margin-bottom:8px' },
-        'You start on the bench and get subbed in for your moments. Every game is graded on what you actually do, judged for your position and how far into your career you are: a quiet night is fine for a rookie, not for a veteran. Good grades earn incentive bonuses and more minutes. Careers end the way careers do: injuries, contract calls, trades, retirement. Your bonuses are paid when it ends.',
-      ),
+      { class: 'panel gold' },
+      h('h3', { class: 'opt' }, 'THE CONTRACT'),
+      h('div', { class: 'muted desc', style: 'font-size:var(--fs-s);margin-bottom:6px' }, 'Start on the bench, get subbed in for your moments. Every game is graded on what you do; good grades earn bonuses and minutes. Careers end the way careers do. Bonuses pay when it ends.'),
       bet.el,
-      sign,
     ),
   );
+  f.foot.append(sign);
   render();
   bet.el.addEventListener('click', () => refresh());
-  return { el };
+  return { el: f.el };
 }
 
 function cap(s: string) {
@@ -160,7 +155,7 @@ function careerState(save: CareerSave): CareerState {
 
 function hubScreen(app: App, save: CareerSave): Screen {
   app.startReel();
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'THE LOCKER ROOM', kicker: 'MY CAREER', onBack: () => app.show(menuScreen(app)) });
   const ticket = save.ticket;
   if (ticket.outcome.kind !== 'career') throw new Error('bad ticket');
   const team = teamById(save.teamId);
@@ -170,13 +165,15 @@ function hubScreen(app: App, save: CareerSave): Screen {
     { pts: 0, ast: 0, reb: 0, stl: 0, blk: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0 },
   );
   const n = Math.max(1, save.log.length);
+  const jersey = h('div', { class: 'hub-jersey' });
+  jersey.innerHTML = ART.jersey(String(player.number), team.colors.primary);
   const card = h(
     'div',
-    { class: 'panel' },
+    { class: 'panel hub-card', style: `--c:${team.colors.primary}` },
     h(
       'div',
-      { class: 'row between' },
-      h('div', {}, h('div', { class: 'subtitle' }, `${team.city} ${team.name}`), h('div', { class: 'title big' }, fullName(save)), h('div', { class: 'muted' }, `${save.pos} · ${player.height.toFixed(2)}m · ${player.ratings.ovr} OVR · AGE ${player.age + save.gamesPlayed} · GAME ${save.gamesPlayed + 1}`)),
+      { class: 'row between nowrap' },
+      h('div', { class: 'row nowrap' }, logoImg(team, 64), jersey, h('div', {}, h('div', { class: 'kicker' }, `${team.city} ${team.name}`), h('div', { class: 'title big' }, fullName(save)), h('div', { class: 'muted', style: 'font-size:var(--fs-s)' }, `${save.pos} · ${player.height.toFixed(2)}m · ${player.ratings.ovr} OVR · AGE ${player.age + save.gamesPlayed} · GAME ${save.gamesPlayed + 1}`))),
       h(
         'div',
         { style: 'text-align:right' },
@@ -214,36 +211,33 @@ function hubScreen(app: App, save: CareerSave): Screen {
   });
   const events = h('div', {});
   for (const e of save.events) events.append(h('div', { class: 'muted', style: 'font-size:13px;margin-top:4px' }, `After game ${e.afterGame}: ${e.title} · ${e.amount >= 0 ? '+' : ''}${fmtCredits(e.amount * ticket.bet)} CR`));
-  const actions = h('div', { class: 'row' });
+  const actions = f.foot;
+  actions.append(fineHash(ticket.fairnessHash));
   const opp = opponentFor(save, save.gamesPlayed);
   const play = h('button', { class: 'btn primary' }, `PLAY GAME ${save.gamesPlayed + 1} VS ${opp.abbr}`);
   play.onclick = () => {
     audio.click();
     playCareerGame(app, save, team, opp, save.gamesPlayed);
   };
-  actions.append(play);
-  const retire = h('button', { class: 'btn ghost' }, 'RETIRE NOW');
+  const retire = h('button', { class: 'btn' }, 'RETIRE NOW');
   retire.onclick = () => {
     if (!confirm('Retire now? Your career ends and your contract settles.')) return;
     const st = careerState(save);
     endCareer(app, save, st.banked > st.total ? { neg: 'contract' } : { pos: 'retire' }, true);
   };
-  actions.append(retire);
-  el.append(
-    topbar('MY CAREER', () => app.show(menuScreen(app))),
+  actions.append(retire, play);
+  f.body.append(
     card,
     h(
       'div',
-      { class: 'panel' },
+      { class: 'panel volt fill scroll-y' },
       h('h3', {}, 'GAME LOG'),
-      save.log.length ? h('div', { style: 'overflow-x:auto' }, log) : h('div', { class: 'muted' }, 'No games yet. The coach has you pencilled in for limited minutes.'),
+      h('div', { class: 'kicker', style: 'margin:2px 0 6px' }, `Stake ${fmtCredits(ticket.bet)} CR · Banked ${fmtCredits(save.earned * ticket.bet)} CR (paid when your career ends) · Next game ~${Math.round(save.minutes * 100)}% of the minutes`),
+      save.log.length ? log : h('div', { class: 'muted' }, 'No games yet. The coach has you pencilled in for limited minutes.'),
       events,
-      h('div', { class: 'muted', style: 'margin-top:8px' }, `Contract stake ${fmtCredits(ticket.bet)} CR · Bonuses banked ${fmtCredits(save.earned * ticket.bet)} CR (paid when your career ends) · Next game: about ${Math.round(save.minutes * 100)}% of the minutes`),
     ),
-    actions,
-    h('div', { class: 'panel' }, fairnessBlock(ticket.fairnessHash)),
   );
-  return { el, keepReel: true };
+  return { el: f.el, keepReel: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +331,7 @@ function playCareerGame(app: App, save: CareerSave, team: TeamDef, opp: TeamDef,
 // ---------------------------------------------------------------------------
 // Career events
 
-interface Story {
+export interface Story {
   title: string;
   text: string;
   /** Optional decision: each choice has its own consequence text. */
@@ -405,7 +399,7 @@ function boostScreen(app: App, save: CareerSave, amount: number): Screen {
   return storyScreen(app, save, { title, text, outcome: `+${fmtCredits(amount * save.ticket.bet)} CR added to your banked bonuses.` }, () => app.show(careerScreen(app)), 'BACK TO THE LOCKER ROOM');
 }
 
-function storyScreen(app: App, save: CareerSave, story: Story, onDone: () => void, doneLabel: string): Screen {
+export function storyScreen(app: App, save: CareerSave, story: Story, onDone: () => void, doneLabel: string): Screen {
   app.startReel();
   const el = h('div', { class: 'screen center fade-in' });
   const panel = h('div', { class: 'panel career-event' }, h('div', { class: 'subtitle' }, `${fullName(save).toUpperCase()} · AFTER GAME ${save.gamesPlayed}`), h('div', { class: 'title big' }, story.title), h('p', {}, story.text));

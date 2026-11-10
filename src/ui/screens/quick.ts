@@ -3,7 +3,7 @@ import { casino, fmtCredits } from '../../app/casino.ts';
 import { store } from '../../app/store.ts';
 import { TEAMS, teamById, type TeamDef } from '../../data/teams.ts';
 import { quickGameOdds } from '../../core/casino/paytables.ts';
-import { betPanel, teamCard, topbar } from '../common.ts';
+import { betPanel, frame, logoImg, teamCard } from '../common.ts';
 import { gameScreen } from './game.ts';
 import { resultsScreen } from './results.ts';
 import { menuScreen } from './menu.ts';
@@ -11,20 +11,20 @@ import { audio } from '../../engine/audio.ts';
 import type { RoundTicket } from '../../core/casino/types.ts';
 
 export function quickGameScreen(app: App): Screen {
-  const el = h('div', { class: 'screen fade-in' });
+  const f = frame({ title: 'QUICK GAME', kicker: 'MONEYLINE · ONE GAME', onBack: () => app.show(menuScreen(app)), split: true });
   let mine: TeamDef = teamById(store.data.favTeam);
   let opp: TeamDef = TEAMS.find((t) => t.id !== mine.id)!;
   let step: 'mine' | 'opp' = 'mine';
   app.showTeam(mine);
 
   const grid = h('div', { class: 'grid' });
-  const stepLabel = h('div', { class: 'subtitle' }, 'CHOOSE YOUR TEAM');
+  const stepLabel = h('div', { class: 'title mid' }, 'CHOOSE YOUR TEAM');
   const oddsEl = h('div', { class: 'odds' }, '');
   const payoutEl = h('div', { class: 'muted' }, '');
   const bet = betPanel({ onChange: () => refreshOdds() });
   const start = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'PLACE BET & TIP OFF');
-  const next = h('button', { class: 'btn', 'data-nav-advance': '' }, 'NEXT: PICK OPPONENT ›');
-  const info = h('div', { class: 'panel' });
+  const next = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'NEXT: PICK OPPONENT ›');
+  const info = h('div', { class: 'panel volt matchup' });
 
   const refreshOdds = () => {
     const f = quickGameOdds(mine.ovr, opp.ovr);
@@ -58,9 +58,11 @@ export function quickGameScreen(app: App): Screen {
     info.innerHTML = '';
     const starters = t.roster.slice(0, 5);
     const table = h('table', { class: 'table' });
-    table.append(h('tr', {}, h('th', {}, `${t.city} ${t.name} · ${t.arena.name} (${t.arena.capacity.toLocaleString()})`), h('th', {}, 'POS'), h('th', {}, 'OVR'), h('th', {}, '3PT'), h('th', {}, 'DNK'), h('th', {}, 'DEF')));
+    table.append(h('tr', {}, h('th', {}, 'STARTING FIVE'), h('th', {}, 'POS'), h('th', {}, 'OVR'), h('th', {}, '3PT'), h('th', {}, 'DNK'), h('th', {}, 'DEF')));
     for (const p of starters) table.append(h('tr', {}, h('td', {}, `#${p.number} ${p.name}`), h('td', {}, p.pos), h('td', {}, String(p.ratings.ovr)), h('td', {}, String(p.ratings.three)), h('td', {}, String(p.ratings.dunk)), h('td', {}, String(p.ratings.def))));
-    info.append(h('h3', {}, 'STARTING FIVE'), h('div', { style: 'overflow-x:auto' }, table));
+    // Matchup header: the two logos, big.
+    const vs = h('div', { class: 'vs-row' }, logoImg(mine, 54), h('div', { class: 'vs-names' }, h('div', { class: 'title mid' }, `${mine.abbr} vs ${opp.abbr}`), h('div', { class: 'kicker' }, `${opp.arena.name} · ${t.city} ${t.name} ${t.ovr} OVR`)), logoImg(opp, 54));
+    info.append(vs, table);
   };
   next.onclick = () => {
     audio.click();
@@ -79,12 +81,14 @@ export function quickGameScreen(app: App): Screen {
     const ticket = casino.placeBet('quick', bet.bet, { userOvr: mine.ovr, oppOvr: opp.ovr, mine: mine.id, opp: opp.id });
     launchQuickGame(app, ticket, mine, opp);
   };
-  const betBox = h('div', { class: 'panel' }, h('h3', {}, 'MONEYLINE'), h('div', { class: 'row' }, oddsEl, h('div', { class: 'grow' }, payoutEl)), bet.el, h('div', { class: 'row' }, next, start));
-  el.append(topbar('QUICK GAME', () => app.show(menuScreen(app))), stepLabel, grid, betBox, info);
+  const betBox = h('div', { class: 'panel gold' }, h('h3', {}, 'MONEYLINE'), h('div', { class: 'row nowrap' }, oddsEl, h('div', { class: 'grow muted', style: 'font-size:var(--fs-s)' }, payoutEl)), bet.el);
+  f.body.append(stepLabel, grid, betBox);
+  f.stage.append(h('div', { class: 'grow' }), info);
+  f.foot.append(next, start);
   renderGrid();
   refreshOdds();
   renderInfo(mine);
-  return { el };
+  return { el: f.el };
 }
 
 export function launchQuickGame(app: App, ticket: RoundTicket, mine: TeamDef, opp: TeamDef) {

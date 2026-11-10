@@ -1,8 +1,30 @@
-# Ball is Life
+# Ball Is Life 27
 
 A 3D basketball betting game in the style of the modern NBA 2K menus and gameplay, built as an installable PWA that runs on desktop and mobile. Every round is a bet. The front end plays like a skill-based sports game; the backend resolves every round as a strictly deterministic, RTP-controlled betting game and the on-court bots are steered to reproduce that result.
 
 **Play it:** https://arifialkov.github.io/ball-is-life/ (auto-deployed from `main` by `.github/workflows/deploy-pages.yml`)
+
+## Presentation
+
+Ball Is Life 27 is dressed like a sports network broadcast. The 27 nods to the yearly-release
+series and to rosters that keep getting updated.
+
+- **Menus**: bright, logo-led and fitted to the screen. Every screen has a header, a body and an
+  action bar sized to the viewport, so nothing scrolls on desktop or on phones in either
+  orientation. Team pickers are compact logo grids beside the 3D roster. Long lists, such as the
+  career game log and the settings ledger, scroll inside their own panel.
+- **In game**:
+  - a logo scorebug with team-colour slabs, a possession marker and the shot clock;
+  - lower-third chyrons with the scorer's line, scoring runs ("CAP ON A 9-0 RUN"), steals and
+    blocks;
+  - team-colour slab call-outs;
+  - full-width period, halftime and final graphics, with a team stat comparison at the half;
+  - a pre-game open: a cinematic orbit of the arena under a TONIGHT matchup card.
+- **Instant replays**: made dunks, threes and blocks are replayed in the next dead ball, slowed
+  down, with an orbiting low camera and a letterbox. The best one comes back as the
+  **play of the game** before the final. Any button skips the open or a replay. Replays are drawn
+  from a rolling recording of the scene; the match is paused while one plays, so they never touch
+  the game.
 
 ## Quick start
 

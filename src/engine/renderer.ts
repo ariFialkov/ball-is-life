@@ -18,7 +18,9 @@ export class Renderer {
     this.canvas = canvas;
     this.mobile = isMobile();
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !this.mobile, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.mobile ? 1.5 : 2));
+    // ?lowgl (layout tests): draw the 3D at a fraction of the resolution.
+    const low = new URLSearchParams(location.search).has('lowgl');
+    this.renderer.setPixelRatio(low ? 0.3 : Math.min(window.devicePixelRatio, this.mobile ? 1.5 : 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
