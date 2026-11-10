@@ -111,6 +111,12 @@ interface Attempt {
   exec: number;
   bot: BotScript | null;
   inRange: boolean;
+  /** Slam pressed before the hand reached the rim: throw it down as soon as it does. */
+  slamWanted: boolean;
+  /** Current jump height (for the camera). */
+  turnAir?: number;
+  /** Finished by the auto-slam (the player never pressed it): judged a little lower. */
+  autoSlam: boolean;
 }
 
 interface Turn {
@@ -155,6 +161,10 @@ class DunkContest {
   private comboEl: HTMLElement;
   private seenByDunker = new Map<Id, Set<string>>();
   private helpers: Character[] = [];
+  /** Time scale for the player's attempt: slow motion while there are decisions to make. */
+  private slow = 1;
+  private camDir = new THREE.Vector3(1, 0, 0);
+  private cueEl: HTMLElement;
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
 
@@ -164,7 +174,8 @@ class DunkContest {
     this.cardsEl = h('div', { class: 'judge-cards' });
     this.legendEl = h('div', { class: 'dunk-legend' });
     this.comboEl = h('div', { class: 'dunk-combo' });
-    this.scene.hud.append(this.cardsEl, this.legendEl, this.comboEl);
+    this.cueEl = h('div', { class: 'dunk-cue' });
+    this.scene.hud.append(this.cardsEl, this.legendEl, this.comboEl, this.cueEl);
     this.queue = [() => this.startRound(1)];
     this.next();
   }
@@ -302,6 +313,8 @@ class DunkContest {
       exec: 0,
       bot,
       inRange: false,
+      slamWanted: false,
+      autoSlam: false,
     };
     t.attempt = a;
     this.setApproach(a, angle);
@@ -312,6 +325,7 @@ class DunkContest {
     c.fs.ikWeight = 0;
     this.comboEl.textContent = '';
     this.cardsEl.innerHTML = '';
+    this.cue('');
     s.prompt.textContent = `${t.name.toUpperCase()} · DUNK ${t.dunkNo + 1} OF 2${t.attemptNo ? ` · ATTEMPT ${t.attemptNo + 1}` : ''}`;
     s.sub.textContent = isUser ? 'Pick your approach' : t.team.abbr;
     this.app.touch.setLabels({ a: 'GO', b: '', x: '', y: '' });
@@ -545,6 +559,10 @@ class DunkContest {
   // ---------------------------------------------------------------------------
   // Attempt
 
+  private cue(text: string) {
+    if (this.cueEl.textContent !== text) this.cueEl.textContent = text;
+  }
+
   private combo(a: Attempt, piece: string) {
     this.comboEl.textContent = this.comboEl.textContent ? `${this.comboEl.textContent} › ${piece}` : piece;
     void a;
@@ -616,8 +634,8 @@ class DunkContest {
     // A long takeoff needs a long flight and a fast run; too far for the speed and you come up short.
     a.D = Math.max(0.15, d - 0.45);
     const vrun = Math.max(3, a.speed);
-    a.tArr = clamp((2 * a.D) / (vrun * 1.1), 0.3, far ? 0.84 : 0.75);
-    const vmax = vrun * 1.35;
+    a.tArr = clamp((2 * a.D) / (vrun * 1.1), 0.3, far ? 0.9 : 0.75);
+    const vmax = vrun * 1.6;
     if ((2 * a.D) / a.tArr > vmax) a.D = (vmax * a.tArr) / 2;
     if (a.ballWith === 'dunker') a.hold = 0;
     // The teammate in the lane: not set yet and he jogs off; take off on top of him and you clip him.
@@ -626,13 +644,24 @@ class DunkContest {
         a.hurdler.char.setState('run');
         a.hurdler = null;
       } else if (d < a.hurdleDist + 0.9) {
-        a.fail = 'CLIPPED YOUR TEAMMATE';
-        this.lastClip = { t: 0, air: 0, along: d - a.hurdleDist, takeoff: d };
+        // Taking off on top of him: he ducks out of the way (no hurdle, but the dunk is still on).
+        this.duck(a);
       }
     }
     if (t.id === USER) s.sub.textContent = d >= FAR_MARK ? 'FROM THE FREE-THROW LINE!' : d < 1.3 ? 'TOO CLOSE' : 'UP!';
     if (d >= FAR_MARK) this.combo(a, 'FROM THE LINE');
     audio.sneaker();
+  }
+
+  /** The hurdled teammate dives out of the way. */
+  private duck(a: Attempt) {
+    const hz = a.hurdler;
+    if (!hz) return;
+    hz.char.setState('dejected');
+    const perp = new THREE.Vector3(-a.dirIn.z, 0, a.dirIn.x);
+    hz.char.root.position.addScaledVector(perp, 0.9);
+    a.hurdler = null;
+    if (this.turn?.id === USER) this.scene.sub.textContent = 'HE DUCKED OUT OF THE WAY · TAKE OFF FURTHER OUT TO CLEAR HIM';
   }
 
   private startMove(t: Turn, a: Attempt, kind: Move) {
@@ -668,7 +697,7 @@ class DunkContest {
       ball.place(hand.x + adjust.x, Math.max(hand.y, BALL_R), hand.z + adjust.z);
       const resid = toRim.sub(adjust).multiplyScalar(1.8);
       ball.vel.set(resid.x, over > 0 ? -4.2 : -1.0, resid.z);
-      a.exec = clamp(1 - Math.max(0, off - 0.12) / 0.3, 0, 1) * 0.7 + clamp(over / 0.2, 0, 1) * 0.3;
+      a.exec = (clamp(1 - Math.max(0, off - 0.12) / 0.3, 0, 1) * 0.7 + clamp(over / 0.2, 0, 1) * 0.3) * (a.autoSlam ? 0.75 : 1);
       this.lastRelease = { off, over, exec: a.exec };
     } else if (a.bot!.fail === 'rim') {
       // A planned miss: thrown down onto the front of the rim.
@@ -711,28 +740,37 @@ class DunkContest {
   // ---------------------------------------------------------------------------
   // Cameras
 
+  /**
+   * One constant third-person camera: behind the dunker and a little to the side, looking past him at
+   * the rim, rising with him in the air. The heading follows the approach (or, between attempts,
+   * the way to the rim) and only changes smoothly, so the view never cuts.
+   */
+  private chaseCamera(p: THREE.Vector3, air: number, heading: THREE.Vector3 | null) {
+    const rimG = new THREE.Vector3(this.rim.x, 0, this.rim.z);
+    const to = heading ? heading.clone() : rimG.clone().sub(p).setY(0);
+    if (to.lengthSq() > 0.25) this.camDir.lerp(to.normalize(), 0.2).normalize();
+    const dir = this.camDir;
+    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+    if (perp.z < 0) perp.multiplyScalar(-1);
+    const pos = p.clone().addScaledVector(dir, -4.4).addScaledVector(perp, 0.85);
+    pos.y = 2.35 + air * 0.75;
+    const dist = Math.hypot(rimG.x - p.x, rimG.z - p.z);
+    const look = p.clone().addScaledVector(dir, Math.min(dist, 3.4) * 0.75);
+    look.y = 2.25 + air * 0.55;
+    this.scene.cam(pos, look, 5);
+  }
+
   private idleCamera() {
-    this.scene.cam(new THREE.Vector3(this.rim.x - SIDE * 6.5, 2.8, 7.5), new THREE.Vector3(this.rim.x - SIDE * 2.5, 2.4, 0), 2.5);
+    const t = this.turn;
+    if (t) this.chaseCamera(t.char.root.position, 0, null);
   }
 
   private approachCamera(a: Attempt) {
-    const pos = a.pos.clone().addScaledVector(a.dirIn, -4.2);
-    pos.y = 2.9;
-    this.scene.cam(pos, new THREE.Vector3(this.rim.x, 2.2, this.rim.z), 5);
+    this.chaseCamera(a.pos, 0, a.dirIn);
   }
 
   private attemptCamera(a: Attempt) {
-    const perp = new THREE.Vector3(-a.dirIn.z, 0, a.dirIn.x);
-    if (perp.z < 0) perp.multiplyScalar(-1);
-    const rimG = new THREE.Vector3(this.rim.x, 0, this.rim.z);
-    const d = Math.hypot(rimG.x - a.pos.x, rimG.z - a.pos.z);
-    // Wide for the run-up; in the air it pushes in low and close, looking up at the rim.
-    const close = a.state === 'air' || a.state === 'gather' || a.state === 'land' ? 1 : clamp(1 - (d - 3) / 6, 0, 1);
-    const pos = rimG.clone().addScaledVector(a.dirIn, -(3.6 - 1.2 * close)).addScaledVector(perp, 6.4 - 2.2 * close);
-    pos.y = 2.7 - 0.6 * close;
-    const look = a.pos.clone().lerp(rimG, a.state === 'run' ? 0.45 : 0.6);
-    look.y = 2.3 + 0.3 * close;
-    this.scene.cam(pos, look, 2.6 + 1.5 * close);
+    this.chaseCamera(a.pos, a.state === 'air' ? a.turnAir ?? 0 : 0, a.dirIn);
   }
 
   // ---------------------------------------------------------------------------
@@ -741,7 +779,19 @@ class DunkContest {
   update(dtReal: number) {
     const s = this.scene;
     const t = this.turn;
-    const dt = t && t.id !== USER ? dtReal * BOT_SPEED : dtReal;
+    // Slow motion while the player has a decision to make: the last part of the run-up (setups, the
+    // takeoff), the gather, and the flight until the ball is thrown down.
+    let want = 1;
+    const at = t?.attempt;
+    if (t && t.id === USER && at && t.pause <= 0) {
+      const dd = Math.hypot(this.rim.x - at.pos.x, this.rim.z - at.pos.z);
+      if (at.state === 'air' && !at.released && at.ballWith !== 'free') want = 0.42;
+      else if (at.state === 'gather') want = 0.5;
+      else if (at.state === 'run' && dd < 8.5) want = 0.62;
+    }
+    this.slow += (want - this.slow) * Math.min(1, dtReal * 6);
+    s.hud.classList.toggle('slowmo', this.slow < 0.9);
+    const dt = t && t.id !== USER ? dtReal * BOT_SPEED : dtReal * this.slow;
     s.update(dt);
     s.stepBalls(dt);
     if (!t) return;
@@ -870,12 +920,21 @@ class DunkContest {
           jump = d - a.speed * dt * 0.5 <= b.takeoff;
         }
         if (setup) this.startToss(t, a, setup);
+        // The takeoff cue: a good moment to go up (timed to the lob when there is one in the air).
+        if (isUser) {
+          let good: boolean;
+          if (a.toss && !a.toss.caught) good = Math.abs(a.toss.dur - a.toss.t - (GATHER + CATCH_TIME)) < 0.14;
+          else if (a.hurdler?.ready) good = d > a.hurdleDist + 1.25 && d < a.hurdleDist + 2.3;
+          else good = d > 2.2 && d < 3.5;
+          this.cue(good ? 'JUMP!' : '');
+        }
         if (hurdle) {
           a.hurdleDist = 1.6;
           a.hurdler = this.spawnHelper(t, a, 'hurdle');
           this.combo(a, 'TEAMMATE IN THE LANE');
         }
         if (jump || d < 0.9) {
+          this.cue('');
           a.state = 'gather';
           a.t = 0;
           a.plantDist = d;
@@ -924,6 +983,7 @@ class DunkContest {
         const x = a.D * (1 - (1 - sx) * (1 - sx)) + Math.max(0, a.t - a.tArr) * 0.25;
         a.pos.copy(a.takeoffAt).addScaledVector(a.dirIn, x);
         const air = Math.max(0, a.v0 * a.t - 0.5 * G * a.t * a.t);
+        a.turnAir = air;
         c.root.position.copy(a.pos);
         // Spins and reverses turn the body; the base yaw already includes completed turns.
         let yaw = a.yaw;
@@ -936,10 +996,9 @@ class DunkContest {
           fs.hurdle = clamp(1 - Math.abs(along) / 0.9, 0, 1);
           if (Math.abs(along) < 0.18) {
             if (air < 0.65) {
-              a.fail = 'CLIPPED YOUR TEAMMATE';
               this.lastClip = { t: a.t, air, along, takeoff: a.takeoffDist };
-            }
-            else if (!a.hurdleCleared) {
+              this.duck(a);
+            } else if (!a.hurdleCleared) {
               a.hurdleCleared = true;
               this.combo(a, 'OVER HIM');
             }
@@ -959,7 +1018,9 @@ class DunkContest {
           const assist = !isUser && bot!.fail !== 'catch';
           // A bot planning to miss the lob never gets a hand on it.
           const canCatch = isUser || bot!.fail !== 'catch';
-          if (live && canCatch && (dist < 0.62 || (assist && ts.t >= ts.dur - 0.02))) {
+          // A generous catch for the player: a hand within ~1m takes it, and a ball arriving within reach is pulled in.
+          const userCatch = isUser && (dist < 0.95 || (ts.t >= ts.dur - 0.02 && dist < 1.45));
+          if (live && canCatch && (userCatch || (!isUser && dist < 0.62) || (assist && ts.t >= ts.dur - 0.02))) {
             ts.caught = true;
             a.ballWith = 'dunker';
             a.hold = c.handedness;
@@ -988,9 +1049,10 @@ class DunkContest {
           if (req && a.queue.length < 2 && a.slamT === null && !a.queue.includes('slam')) a.queue.push(req);
           if (!a.move && a.queue.length && a.slamT === null) {
             const nx = a.queue.shift()!;
-            if (nx === 'slam') a.slamT = a.t;
-            // No time left for a move: ignore it.
-            else if (a.t < a.hang - 0.3) this.startMove(t, a, nx);
+            if (nx === 'slam') a.slamWanted = true;
+            // No time left to finish the move and still slam: ignore it.
+            else if (a.t + MOVE_TIME[nx] < a.hang - 0.24) this.startMove(t, a, nx);
+            else if (isUser) s.sub.textContent = 'NO TIME FOR THAT ONE · SLAM IT';
           }
           if (a.move) {
             a.move.t += dt;
@@ -1021,12 +1083,23 @@ class DunkContest {
           a.ball.syncVisual();
           // A cue for the slam: the hand is up at the rim.
           a.inRange = (!a.move || a.move.kind === 'spin' || a.move.kind === 'reverse') && p.y > RIM_H - 0.02 && Math.hypot(p.x - this.rim.x, p.z - this.rim.z) < 0.5;
-          if (isUser) s.sub.textContent = a.inRange ? 'SLAM IT!' : a.move ? MOVE_NAME[a.move.kind].toUpperCase() : s.sub.textContent;
+          if (isUser) this.cue(a.inRange && a.slamT === null ? 'SLAM IT!' : '');
+          if (isUser && a.move) s.sub.textContent = MOVE_NAME[a.move.kind].toUpperCase();
+          // The slam goes the moment the hand is up at the rim (pressed early, it waits for it); a late
+          // press throws it from wherever the hand is. Never pressed: the dunker finishes on his own.
+          if (a.slamT === null && !a.move) {
+            if (a.slamWanted && (a.inRange || a.t > a.hang - 0.2)) a.slamT = a.t;
+            else if (!a.slamWanted && a.inRange && a.t > a.hang - 0.3) {
+              a.slamT = a.t;
+              a.autoSlam = isUser;
+            }
+          }
           if (a.slamT !== null && a.t - a.slamT >= 0.05) this.release(t, a);
           // Came down with it.
           else if (a.t > a.hang - 0.1) this.drop(a, 'CAME DOWN WITH IT');
         }
         if (a.t >= a.hang) {
+          this.cue('');
           a.state = 'land';
           a.t = 0;
           fs.air = 0;

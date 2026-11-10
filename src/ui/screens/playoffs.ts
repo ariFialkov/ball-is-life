@@ -31,7 +31,7 @@ function setupScreen(app: App): Screen {
   const grid = h('div', { class: 'grid' });
   const bet = betPanel({ label: 'ENTRY STAKE' });
   const ladder = h('div', { class: 'row' }, ...PLAYOFF_LADDER.map((m, i) => h('div', { class: `chip${i === 3 ? ' gold' : ''}` }, i === 0 ? 'OUT IN QF: 0x' : i === 3 ? `CHAMPION: ${m}x` : `${['', 'REACH SF', 'REACH FINAL'][i]}: ${m}x`)));
-  const start = h('button', { class: 'btn primary' }, 'ENTER THE PLAYOFFS');
+  const start = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'ENTER THE PLAYOFFS');
   const render = () => {
     grid.innerHTML = '';
     for (const t of TEAMS) {

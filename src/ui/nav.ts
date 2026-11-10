@@ -23,6 +23,8 @@ export class MenuNav {
   private scopeKey: Element | null = null;
   private active = false;
   private hint: HTMLElement;
+  /** What was last activated: picks a sensible place for focus if that click re-rendered the screen. */
+  private lastActivated: 'pick' | 'advance' | 'other' | null = null;
 
   constructor(private input: Input) {
     this.hint = document.createElement('div');
@@ -68,10 +70,7 @@ export class MenuNav {
       this.hint.classList.remove('show');
       return;
     }
-    if (!this.current || !this.current.isConnected || !items.includes(this.current)) {
-      // The focused element was re-rendered or hidden: take the one now in its place.
-      this.current = this.lastRect ? nearestTo(items, this.lastRect) : this.defaultItem(items);
-    }
+    if (!this.current || !this.current.isConnected || !items.includes(this.current)) this.current = this.replacement(items);
     if (any) this.input.consumeAll();
     if (!justActivated || n.back) {
       const el = this.current;
@@ -81,7 +80,12 @@ export class MenuNav {
       else if (n.down) this.move('down', items);
       else if (n.left) this.move('left', items);
       else if (n.right) this.move('right', items);
-      if (n.confirm && !justActivated) this.activate(this.current);
+      if (n.confirm && !justActivated) {
+        this.activate(this.current);
+        // The click may have re-rendered the screen: settle focus now, before reading any positions.
+        const fresh = this.items(scope!);
+        if (this.current && (!this.current.isConnected || !fresh.includes(this.current)) && fresh.length) this.current = this.replacement(fresh);
+      }
       if (n.back) this.back(scope!);
     }
     this.paint(this.current);
@@ -99,9 +103,29 @@ export class MenuNav {
     return Array.from(scope.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => visible(el) && !el.closest('.touch-controls') && !el.closest('[data-nav-skip]'));
   }
 
+  /**
+   * Where focus goes when the focused element is gone. After picking a card (a team, a contest) it
+   * moves on to the screen's advance button; after an advance button that opens another pick it
+   * goes to the selected card; otherwise to whatever now sits where the focus was.
+   */
+  private replacement(items: HTMLElement[]): HTMLElement {
+    const pick = (sel: string) => items.find((el) => el.matches(sel));
+    const was = this.lastActivated;
+    this.lastActivated = null;
+    if (was === 'pick') {
+      const adv = pick('[data-nav-advance]:not([disabled])');
+      if (adv) return adv;
+    }
+    if (was === 'advance') {
+      const card = pick('.team-card.selected:not(.disabled)') ?? pick('.team-card:not(.disabled)');
+      if (card) return card;
+    }
+    return this.lastRect ? nearestTo(items, this.lastRect) : this.defaultItem(items);
+  }
+
   private defaultItem(items: HTMLElement[]): HTMLElement {
     const pick = (sel: string) => items.find((el) => el.matches(sel));
-    return pick('[data-nav-default]') ?? pick('.team-card.selected') ?? pick('.btn.menu') ?? pick('.btn.primary') ?? items[0];
+    return pick('[data-nav-default]') ?? pick('.team-card.selected') ?? pick('.btn.menu') ?? pick('[data-nav-advance]:not([disabled])') ?? pick('.btn.primary') ?? items.find((el) => !el.matches('[data-nav-back]')) ?? items[0];
   }
 
   private move(dir: Dir, items: HTMLElement[]) {
@@ -173,6 +197,7 @@ export class MenuNav {
   private activate(el: HTMLElement | null) {
     if (!el) return;
     audio.click();
+    this.lastActivated = el.matches('.team-card, [data-nav-pick]') ? 'pick' : el.matches('[data-nav-advance]') ? 'advance' : 'other';
     if (el instanceof HTMLInputElement && el.type === 'range') return;
     if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
       if (document.activeElement === el) el.blur();
@@ -197,11 +222,14 @@ export class MenuNav {
   private paint(el: HTMLElement | null) {
     for (const old of Array.from(document.querySelectorAll('.nav-focus'))) if (old !== el) old.classList.remove('nav-focus');
     if (!el) return;
+    if (!el.isConnected) return;
     if (!el.classList.contains('nav-focus')) {
       el.classList.add('nav-focus');
       el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
     }
-    this.lastRect = el.getBoundingClientRect();
+    // Only remember where a live element is (a detached one reports 0,0: the top-left back button).
+    const r = el.getBoundingClientRect();
+    if (r.width || r.height) this.lastRect = r;
   }
 
   private showHint() {

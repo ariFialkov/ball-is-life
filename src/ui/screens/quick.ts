@@ -22,8 +22,8 @@ export function quickGameScreen(app: App): Screen {
   const oddsEl = h('div', { class: 'odds' }, '');
   const payoutEl = h('div', { class: 'muted' }, '');
   const bet = betPanel({ onChange: () => refreshOdds() });
-  const start = h('button', { class: 'btn primary' }, 'PLACE BET & TIP OFF');
-  const next = h('button', { class: 'btn' }, 'NEXT: PICK OPPONENT ›');
+  const start = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'PLACE BET & TIP OFF');
+  const next = h('button', { class: 'btn', 'data-nav-advance': '' }, 'NEXT: PICK OPPONENT ›');
   const info = h('div', { class: 'panel' });
 
   const refreshOdds = () => {

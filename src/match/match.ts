@@ -218,6 +218,8 @@ export class Match {
   private callForBall: { who: Athlete; at: number } | null = null;
   /** The shoot button was pressed before the user's player had the ball: shoot on the catch while it is held. */
   private shootArmed = false;
+  /** A pass button pressed while a teammate's pass is in the air: pass on the catch (one-touch). */
+  private passArmed: { style: PassStyle; dir: THREE.Vector3 | null; at: number } | null = null;
   /** Who touched the ball last (decides out-of-bounds possession). */
   lastToucher: Athlete | null = null;
   /** The offense has had the ball in its frontcourt this possession (over-and-back applies). */
@@ -591,6 +593,7 @@ export class Match {
     this.frontcourt = false;
     this.backcourtTime = 0;
     this.shootArmed = false;
+    this.passArmed = null;
     this.switches.clear();
     for (const a of this.athletes) {
       a.screen = null;
@@ -1178,6 +1181,8 @@ export class Match {
     }
     if (this.phase !== 'live') return;
     const hasBall = this.holder === a;
+    // An armed one-touch pass only carries to a catch by the player we control.
+    if (this.passArmed && this.ball.mode !== 'pass' && !hasBall) this.passArmed = null;
     if (hasBall) {
       // Shoot: hold & release. Holding it from before the catch shoots on the catch.
       const catchAndShoot = s.held.a && this.shootArmed;
@@ -1200,10 +1205,17 @@ export class Match {
         a.action.releaseAt = a.action.t;
         this.shotMeter.active = false;
       }
-      const style: PassStyle | null = s.pressed.b ? 'chest' : s.pressed.x ? 'bounce' : s.pressed.y ? 'lob' : null;
-      if (style && a.action.type === 'none') {
-        const target = this.pickPassTarget(a, mag > 0.2 ? dir : null, mods);
-        if (target) this.startPass(a, target, style);
+      // Pass: straight out of the catch too. A pass pressed while the ball was on its way here goes on the catch.
+      const armed = this.passArmed && this.time - this.passArmed.at < 1.4 ? this.passArmed : null;
+      const style: PassStyle | null = s.pressed.b ? 'chest' : s.pressed.x ? 'bounce' : s.pressed.y ? 'lob' : armed ? armed.style : null;
+      if (style && (a.action.type === 'none' || a.action.type === 'catch')) {
+        const aim = mag > 0.2 ? dir : armed?.dir ?? null;
+        const target = this.pickPassTarget(a, aim, mods);
+        if (target) {
+          if (armed && !s.pressed.b && !s.pressed.x && !s.pressed.y) this.events.push({ type: 'tip', team: a.team, text: 'ONE-TOUCH PASS' });
+          this.startPass(a, target, style);
+        }
+        this.passArmed = null;
       }
       // L1 / LB / F with the ball: call a teammate over to set a screen.
       if (s.pressed.pick) this.callScreen(a);
@@ -1224,7 +1236,12 @@ export class Match {
       if (s.pressed.y && a.action.type === 'none' && a.cooldown <= 0 && this.ball.mode === 'loose') this.startAction(a, 'block');
       // Shoot pressed before the ball arrives: arm a catch-and-shoot.
       if (s.pressed.a) this.shootArmed = true;
-      if (s.pressed.b) {
+      // A pass button while our pass is in the air arms a one-touch pass for whoever we control on the catch.
+      const ourPassInAir = this.ball.mode === 'pass' && this.ball.pass?.fromTeam === a.team;
+      const armStyle: PassStyle | null = s.pressed.b ? 'chest' : s.pressed.x ? 'bounce' : s.pressed.y && ourPassInAir ? 'lob' : null;
+      if (armStyle && ourPassInAir) {
+        this.passArmed = { style: armStyle, dir: mag > 0.2 ? dir.clone() : null, at: this.time };
+      } else if (s.pressed.b) {
         this.callForBall = { who: a, at: this.time };
         this.events.push({ type: 'tip', team: a.team, text: 'CALLING FOR IT' });
       }
@@ -1571,9 +1588,9 @@ export class Match {
   // Actions
 
   startAction(a: Athlete, type: ActionType, target?: Athlete, opts: { fade?: number } = {}) {
-    const durations: Record<ActionType, number> = { none: 0, shoot: 0.95, layup: 1.0, dunk: 1.1, pass: 0.42, block: 0.9, steal: 0.5, catch: 0.3 };
+    const durations: Record<ActionType, number> = { none: 0, shoot: 0.95, layup: 1.0, dunk: 1.1, pass: 0.32, block: 0.9, steal: 0.5, catch: 0.3 };
     if (a.move) this.endMove(a);
-    a.action = { type, t: 0, dur: durations[type], releaseAt: type === 'shoot' ? 0.46 : type === 'layup' ? 0.45 : type === 'dunk' ? 0.5 : 0.13, released: !(type === 'shoot' && a === this.controlled && this.opts.userControlled && !this.autopilot), quality: 0.7, target };
+    a.action = { type, t: 0, dur: durations[type], releaseAt: type === 'shoot' ? 0.46 : type === 'layup' ? 0.45 : type === 'dunk' ? 0.5 : 0.08, released: !(type === 'shoot' && a === this.controlled && this.opts.userControlled && !this.autopilot), quality: 0.7, target };
     if (type === 'shoot' || type === 'layup' || type === 'dunk') {
       const b = this.basket(a.team, this.tmp3);
       a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);

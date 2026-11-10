@@ -78,7 +78,7 @@ function createScreen(app: App): Screen {
   renderPos();
   const grid = h('div', { class: 'grid' });
   const bet = betPanel({ label: 'CONTRACT STAKE' });
-  const sign = h('button', { class: 'btn primary' }, 'SIGN ROOKIE CONTRACT');
+  const sign = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'SIGN ROOKIE CONTRACT');
   const valid = () => first.value.trim().length >= 1 && last.value.trim().length >= 2;
   const refresh = () => {
     (sign as HTMLButtonElement).disabled = !casino.canBet(bet.bet) || !valid();

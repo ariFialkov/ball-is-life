@@ -59,6 +59,10 @@ The engine uses only erasable TypeScript syntax, so the same file runs in Node w
 | Pause | Esc / P | Options | Menu | II |
 | Menus | Arrows, Enter, Esc | D-pad or left stick, Cross, Circle | D-pad or left stick, A, B | Tap |
 
+With a controller or the keyboard, picking a team or a contest moves the cursor on to the screen's next step (NEXT, ENTER CONTEST, PLACE BET), or to the next team to pick, never back to Back.
+
+Passes are quick (the ball is gone 0.08s after the press) and can be thrown straight out of a catch. Press a pass button while a teammate's pass is still in the air to you and it goes on the catch: a **one-touch pass** (aimed with the stick as you press, or at the catch).
+
 Dribble moves are read relative to the way the ball handler faces:
 
 | Skill stick | Move |
@@ -107,8 +111,9 @@ All three contests are physics-based: every shot, pass and dunk is a real ball f
   - **Approach**: left stick slides your start spot round the arc (straight on, the wings, the baseline); Shoot starts the run, Sprint for more speed (a free-throw-line takeoff needs it).
   - **Run-up**: Lob button tosses it off the glass, Bounce button bounces it up for yourself, Pass flips it to a teammate on the wing who throws the alley-oop, and Screen (L1/LB/F) calls a teammate into the lane to jump over. Shoot takes off.
   - **In the air**: right stick (arrows / swipe) ↑ windmill, ↓ between the legs, ← → behind the back; Lob does a 360, Pass a reverse; Shoot slams. Moves chain as long as the flight lasts.
-  - It is all physical: a lob has to be caught (time the takeoff to the toss), the teammate has to be cleared (take off far enough out), every move takes real air time, and the ball only goes down if your hand is over the rim when you throw it down ("SLAM IT!" shows when it is). Judges reward difficulty, chaining, a clean finish and variety (they mark down something they've already seen from you); retries cost. Bots freestyle too, with combos chosen to score what the outcome ticket needs (`src/contests/dunkScore.ts`, unit tested). Top 2 go to the final.
-- **Skills Challenge** (classic course): weave the chairs on the blue-arrow side, hit the chest-pass target, make a layup at the far basket, then dribble back to the 3-point line at the first end and make a three. Every pass and shot must go in before you move on. The route is painted on the floor (the current leg lit), a green beacon marks the next objective, numbered signs mark the stations, and a step tracker and a how-to line say what to do with which button. Fastest 2 go to the final.
+  - One third-person camera behind the dunker the whole time, and **slow motion** whenever there's a decision to make (the end of the run-up, the gather, and the flight until the slam).
+  - It is all physical: a lob has to be caught (time the takeoff to the toss; a **JUMP!** cue shows a good moment), every move takes real air time, and the ball only goes down if your hand is over the rim. It is built so a beginner dunks it most of the time: slam can be pressed early (the dunker throws it down as soon as the hand gets there), and he finishes it himself if you never press it; moves that wouldn't finish in time are refused rather than wrecking the dunk; lobs are caught generously; and a teammate you'd clip ducks out of the way (no hurdle credit, but the dunk is still on). Judges reward difficulty, chaining, a clean finish and variety (they mark down something they've already seen from you); retries cost. Bots freestyle too, with combos chosen to score what the outcome ticket needs (`src/contests/dunkScore.ts`, unit tested). Top 2 go to the final.
+- **Skills Challenge**, two halves on one clock. **First half** (classic course): weave the chairs on the blue-arrow side, hit the chest-pass target, make a layup at the far basket, then dribble back to the 3-point line at the first end and make a three. **Second half** (the same idea, new drills): cross over through the cones on the other side of the floor, bounce-pass it off the floor and up through a low target, dunk at the far basket, and finish with a logo three from about 9.4m. Every pass and shot must go in before you move on. The route is painted on the floor (the current leg lit), a green beacon marks the next objective, numbered signs mark the stations, and a step tracker and a how-to line say what to do with which button. Fastest 2 go to the final.
 
 Bot turns can be watched at speed or skipped (Cross / A / Enter, or the SKIP button).
 

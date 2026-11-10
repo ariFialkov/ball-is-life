@@ -60,6 +60,24 @@ describe('contest shot physics', () => {
       expect(settleShot(m)).toBe(false);
     }
   });
+  it('skills-course wing three and logo three: clean releases go in, planned misses never do', () => {
+    const wing = new THREE.Vector3(-RIM_X + 7.6 * Math.cos(0.6), 0, 7.6 * Math.sin(0.6));
+    const logo = new THREE.Vector3(RIM_X - 9.4, 0, 0);
+    for (const [spot, side] of [[wing, -1], [logo, 1]] as [THREE.Vector3, 1 | -1][]) {
+      for (const y of [2.2, 2.4, 2.55]) {
+        const toward = new THREE.Vector3(side * RIM_X - spot.x, 0, -spot.z).normalize();
+        const from = spot.clone().addScaledVector(toward, 0.28).setY(y);
+        const b = new Ball();
+        launchJumper(b, from, side, { long: 0, side: 0 }, 0, 3);
+        expect(settleShot(b)).toBe(true);
+        for (let k = 0; k < 4; k++) {
+          const m = new Ball();
+          launchJumper(m, from, side, plannedMiss(k), 0, 3);
+          expect(settleShot(m)).toBe(false);
+        }
+      }
+    }
+  });
   it('release heights from short guards to tall wings', () => {
     for (const y of [2.2, 2.38, 2.55]) for (const s of spots()) expect(shoot(new THREE.Vector3(s.x, y, s.z), { long: 0, side: 0 })).toBe(true);
   });

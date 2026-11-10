@@ -265,3 +265,9 @@ input[type=text], select { background: rgba(0,0,0,0.4); border: 1px solid var(--
 .skills-howto { position: absolute; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: min(94vw, 900px); padding: 8px 14px; border-radius: 10px; background: rgba(8,10,16,0.72); border: 1px solid rgba(255,255,255,0.12); font-size: clamp(11px, 1.6vw, 14px); line-height: 1.6; text-align: center; color: #dfe3ee; }
 .skills-howto:empty { display: none; }
 .skills-howto b { display: inline-block; min-width: 1.6em; padding: 0 6px; margin: 0 2px; border-radius: 5px; background: rgba(255,255,255,0.14); color: #fff; font-weight: 800; }
+/* Dunk contest: the big action cue, and a vignette while in slow motion. */
+.dunk-cue { position: absolute; left: 0; right: 0; top: 52%; text-align: center; font-weight: 900; font-style: italic; font-size: clamp(30px, 6vw, 58px); letter-spacing: 0.06em; color: #fff; text-shadow: 0 0 22px rgba(56,255,122,0.9), 0 4px 14px rgba(0,0,0,0.9); pointer-events: none; animation: cuePulse 0.5s ease-in-out infinite alternate; }
+.dunk-cue:empty { display: none; }
+@keyframes cuePulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+.contest-hud.slowmo::before { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px 30px rgba(0,0,0,0.55); }
+.skills-steps .step.half { color: #fff; background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.3); }

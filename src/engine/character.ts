@@ -820,7 +820,7 @@ export class Character {
         b[R] = [-0.6 - 2.5 * reach, 0, -hand * 0.1];
         b[RE] = [-1.4 * (1 - reach) - 0.05, 0, 0];
         b[RW] = [-0.5 * reach + 0.6 * smooth(clamp01((u - 0.45) / 0.2)), 0, 0];
-        b[L] = [-0.6 - 0.9 * reach, 0, hand * 0.4];
+        b[L] = [-0.6 - 0.9 * reach, 0, -hand * 0.25];
         b[LE] = [-1.4, 0, 0];
         b.rHip = [-1.2 * reach - 0.1, 0, 0.1];
         b.rKnee = [1.4 * reach + 0.2, 0, 0];
@@ -1008,9 +1008,10 @@ export class Character {
         break;
       }
       case 'pass': {
-        const dur = 0.42;
+        // Quick: the hands snap through by ~0.1s (the ball leaves at 0.08s), then recover.
+        const dur = 0.32;
         const u = Math.min(1, t / dur);
-        const push = smooth(clamp01(u / 0.45)) * (1 - smooth(clamp01((u - 0.7) / 0.3)) * 0.5);
+        const push = smooth(clamp01(u / 0.32)) * (1 - smooth(clamp01((u - 0.6) / 0.4)) * 0.5);
         b.lShoulder = [-0.5 - 1.1 * push, 0, 0.35 - 0.25 * push];
         b.rShoulder = [-0.5 - 1.1 * push, 0, -0.35 + 0.25 * push];
         b.lElbow = [-1.5 * (1 - push) - 0.05, 0, 0];
@@ -1032,10 +1033,12 @@ export class Character {
         const jumpT = clamp01((u - 0.08) / 0.8);
         p.jump = Math.sin(jumpT * Math.PI) * 0.6;
         const reach = smooth(clamp01(u / 0.25));
-        b[R] = [-3.0 * reach, 0, -hand * 0.1];
+        // Contesting arm straight up; the other up and a little out (in this rig the l arm swings out
+        // with -z and the r arm with +z, so "out" for the off arm is -hand).
+        b[R] = [-3.0 * reach, 0, hand * 0.05];
         b[RE] = [-0.1, 0, 0];
-        b[L] = [-1.4 * reach, 0, hand * 0.9];
-        b[LE] = [-0.4, 0, 0];
+        b[L] = [-2.3 * reach, 0, -hand * 0.35 * reach];
+        b[LE] = [-0.35, 0, 0];
         b.lKnee = [0.4 * (1 - reach) + 0.2, 0, 0];
         b.rKnee = [0.4 * (1 - reach) + 0.2, 0, 0];
         b.spine = [-0.1, 0, 0];
@@ -1046,11 +1049,12 @@ export class Character {
         const dur = 0.5;
         const u = Math.min(1, t / dur);
         const reach = Math.sin(u * Math.PI);
-        b[R] = [-1.6 * reach - 0.2, 0, -hand * 0.3];
+        // The reaching hand swipes forward and slightly across at the ball; the other arm stays out for balance.
+        b[R] = [-1.6 * reach - 0.2, 0, -hand * 0.15];
         b[RE] = [-0.2, 0, 0];
         b[RW] = [0.5 * reach, 0, 0];
         b.chest = [0, hand * 0.2 * reach, 0];
-        b[L] = [-0.3, 0, hand * 0.9];
+        b[L] = [-0.45, 0, -hand * 0.6];
         b[LE] = [-0.6, 0, 0];
         b.spine = [0.4 + 0.3 * reach, 0, hand * 0.15 * reach];
         b.lHip = [-0.6, 0, -0.4];
@@ -1063,8 +1067,9 @@ export class Character {
       case 'celebrate': {
         const bounce = Math.abs(Math.sin(t * 6));
         p.jump = bounce * 0.12;
-        b.lShoulder = [-2.8 + Math.sin(t * 8) * 0.2, 0, 0.5];
-        b.rShoulder = [-2.8 - Math.sin(t * 8) * 0.2, 0, -0.5];
+        // Arms up in a V.
+        b.lShoulder = [-2.8 + Math.sin(t * 8) * 0.2, 0, -0.4];
+        b.rShoulder = [-2.8 - Math.sin(t * 8) * 0.2, 0, 0.4];
         b.lElbow = [-0.4, 0, 0];
         b.rElbow = [-0.4, 0, 0];
         b.spine = [-0.15, 0, 0];

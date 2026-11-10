@@ -19,7 +19,7 @@ type ContestId = 'three' | 'dunk' | 'skills';
 const CONTESTS: { id: ContestId; name: string; blurb: string; rating: keyof PlayerDef['ratings'] }[] = [
   { id: 'three', name: '3-POINT CONTEST', blurb: '70 seconds · 5 racks + your money rack · 2 deep balls · 40 max · top 3 to the final', rating: 'three' },
   { id: 'dunk', name: 'SLAM DUNK CONTEST', blurb: '2 dunks a round · 3 attempts each · 5 judges, 6-10 · top 2 to the final', rating: 'dunk' },
-  { id: 'skills', name: 'SKILLS CHALLENGE', blurb: 'Chairs · chest-pass target · layup · three · fastest 2 to the final', rating: 'handle' },
+  { id: 'skills', name: 'SKILLS CHALLENGE', blurb: '2 halves: chairs · chest pass · layup · three, then cones · bounce pass · dunk · logo 3 · fastest 2 to the final', rating: 'handle' },
 ];
 
 export function allStarScreen(app: App): Screen {
@@ -30,7 +30,7 @@ export function allStarScreen(app: App): Screen {
   const bet = betPanel({ label: 'ENTRY STAKE' });
   const cards = h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fill,minmax(240px,1fr))' });
   const pay = h('div', { class: 'row' });
-  const enter = h('button', { class: 'btn primary' }, 'ENTER CONTEST');
+  const enter = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'ENTER CONTEST');
   const render = () => {
     cards.innerHTML = '';
     for (const c of CONTESTS) {
