@@ -42,6 +42,8 @@ interface Action {
   target?: Athlete;
   dir?: THREE.Vector3;
   passStyle?: PassStyle;
+  /** Jump shot fading away from the basket (0..1): drifts back, separates from the defender, harder to make. */
+  fade?: number;
 }
 
 /**
@@ -1441,6 +1443,11 @@ export class Match {
       this.startAction(a, 'shoot');
       return;
     }
+    // 3b. Crowded in the mid-range or the post: a skilled scorer creates space with a fadeaway.
+    if (timeHeld > 0.6 && d > 2.8 && d < 7 && openness < 0.9 && shotRating >= 72 && this.rng.chance(0.1 + (this.shotClock < 8 ? 0.15 : 0))) {
+      this.startAction(a, 'shoot', undefined, { fade: this.rng.float(0.5, 0.95) });
+      return;
+    }
     // 4. Pick and roll: a pressured handler (or the start of a set) calls a big up for a ball screen.
     const screenOn = this.teammates(a).some((m) => m.screen);
     if (!screenOn && this.shotClock > 8 && timeHeld > 0.6 && d > 5.5 && (openness < 1.7 || this.shotClock > 18) && this.rng.chance(0.3)) {
@@ -1563,15 +1570,30 @@ export class Match {
   // ---------------------------------------------------------------------------
   // Actions
 
-  startAction(a: Athlete, type: ActionType, target?: Athlete) {
+  startAction(a: Athlete, type: ActionType, target?: Athlete, opts: { fade?: number } = {}) {
     const durations: Record<ActionType, number> = { none: 0, shoot: 0.95, layup: 1.0, dunk: 1.1, pass: 0.42, block: 0.9, steal: 0.5, catch: 0.3 };
     if (a.move) this.endMove(a);
     a.action = { type, t: 0, dur: durations[type], releaseAt: type === 'shoot' ? 0.46 : type === 'layup' ? 0.45 : type === 'dunk' ? 0.5 : 0.13, released: !(type === 'shoot' && a === this.controlled && this.opts.userControlled && !this.autopilot), quality: 0.7, target };
     if (type === 'shoot' || type === 'layup' || type === 'dunk') {
       const b = this.basket(a.team, this.tmp3);
       a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);
-      if (type === 'shoot') a.vel.multiplyScalar(0.2);
-      else {
+      if (type === 'shoot') {
+        // Rising up while moving away from the basket is a fadeaway (or the AI chooses one when crowded).
+        const dx = b.x - a.pos.x;
+        const dz = b.z - a.pos.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const away = -(a.vel.x * dx + a.vel.z * dz) / len;
+        let fade = opts.fade ?? 0;
+        if (!fade && away > 1.1 && len > 2.6) fade = clamp((away - 0.5) / 3, 0.35, 1);
+        if (fade > 0) {
+          a.action.fade = fade;
+          a.action.releaseAt = 0.5;
+          // Push off backwards; the drift decays through the shot.
+          a.vel.set((-dx / len) * (1.3 + 1.1 * fade), 0, (-dz / len) * (1.3 + 1.1 * fade));
+          if (a === this.controlled && this.opts.userControlled) this.events.push({ type: 'tip', team: a.team, text: 'FADEAWAY' });
+        } else a.vel.multiplyScalar(0.2);
+        a.char.fade = fade;
+      } else {
         // Leap toward the rim.
         const dx = b.x - a.pos.x;
         const dz = b.z - a.pos.z;
@@ -1732,7 +1754,8 @@ export class Match {
       if (act.t >= releaseTime) {
         if (act.type === 'shoot' && a === this.controlled && this.opts.userControlled) {
           const r = act.released ? act.releaseAt : 0.9;
-          act.quality = clamp(1 - Math.abs(r - 0.46) / 0.3, 0, 1);
+          // A fadeaway's release window is tighter.
+          act.quality = clamp(1 - Math.abs(r - 0.46) / (act.fade ? 0.3 - 0.12 * act.fade : 0.3), 0, 1);
           this.shotMeter.active = false;
         }
         this.releaseShot(a, act.type, act.quality, mods);
@@ -1779,12 +1802,16 @@ export class Match {
       const c = clamp(1 - d / 2.2, 0, 1) * (o.action.type === 'block' ? 1.4 : 0.8);
       contest = Math.max(contest, c);
     }
+    const fade = type === 'shoot' ? (a.action.fade ?? 0) : 0;
+    // A fadeaway buys separation from the closest defender...
+    contest *= 1 - 0.5 * fade;
     p *= 1 - 0.55 * Math.min(1, contest);
     // Timing.
     p *= 0.5 + 0.75 * quality;
-    if (quality > 0.9) p = Math.max(p, 0.92);
-    // Moving shots.
-    if (type === 'shoot') p *= 1 - 0.25 * clamp(a.vel.length() / SPRINT_SPEED, 0, 1);
+    if (quality > 0.9) p = Math.max(p, 0.92 - 0.22 * fade);
+    // ...but shooting while falling away is harder than squaring up; other moving shots are penalised by speed.
+    if (fade) p *= 1 - 0.3 * fade;
+    else if (type === 'shoot') p *= 1 - 0.25 * clamp(a.vel.length() / SPRINT_SPEED, 0, 1);
     // Director.
     if (mods) {
       p *= a.team === 0 ? mods.userShot : mods.oppShot;
@@ -2025,7 +2052,9 @@ export class Match {
         a.facing = Math.atan2(b.x - a.pos.x, b.z - a.pos.z);
       } else a.facing = Math.atan2(ballRef.x - a.pos.x, ballRef.z - a.pos.z);
     } else if (frozen) {
-      a.vel.multiplyScalar(1 - Math.min(1, dt * 12));
+      // A fadeaway keeps drifting back through the shot; everything else stops dead.
+      if (act === 'shoot' && a.action.fade) a.vel.multiplyScalar(1 - Math.min(1, dt * 1.8));
+      else a.vel.multiplyScalar(1 - Math.min(1, dt * 12));
     } else if (act === 'layup' || act === 'dunk') {
       if (a.action.t > 0.55) a.vel.multiplyScalar(1 - Math.min(1, dt * 6));
     }
@@ -2424,7 +2453,9 @@ export class Match {
         const u = a.action.t / Math.max(0.01, a.action.releaseAt);
         if (act === 'shoot') {
           const rise = clamp((u - 0.3) / 0.7, 0, 1);
-          b.pos.set(a.pos.x + fx * (0.25 - rise * 0.1), 1.1 + rise * (0.9 + 0.4) + a.char.airHeight, a.pos.z + fz * (0.25 - rise * 0.1));
+          // A fadeaway's set point goes back over the head with the lean.
+          const back = (a.action.fade ?? 0) * rise * 0.38;
+          b.pos.set(a.pos.x + fx * (0.25 - rise * 0.1 - back), 1.1 + rise * (0.9 + 0.4) + a.char.airHeight - back * 0.25, a.pos.z + fz * (0.25 - rise * 0.1 - back));
         } else if (act === 'pass') {
           b.pos.set(a.pos.x + fx * 0.35, 1.25, a.pos.z + fz * 0.35);
         } else {

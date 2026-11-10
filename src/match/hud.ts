@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Match, MatchEvent } from './match.ts';
 import { formatClock } from './match.ts';
-import type { Input } from '../engine/input.ts';
+import { buttonNames, type Input } from '../engine/input.ts';
 
 export interface HudContext {
   /** Text shown in the top strip (odds, round, contract...). */
@@ -20,6 +20,7 @@ export class Hud {
   private toastEl: HTMLElement;
   private meterEl: HTMLElement;
   private meterFill: HTMLElement;
+  private meterGreen: HTMLElement;
   private feedbackEl: HTMLElement;
   private hintEl: HTMLElement;
   private stripEl: HTMLElement;
@@ -62,6 +63,7 @@ export class Hud {
     this.toastEl = q('.hud-toast');
     this.meterEl = q('.hud-meter');
     this.meterFill = q('.hud-meter-fill');
+    this.meterGreen = q('.hud-meter-green');
     this.feedbackEl = q('.hud-feedback');
     this.hintEl = q('.hud-hint');
     this.stripEl = q('.hud-strip');
@@ -132,7 +134,13 @@ export class Hud {
       this.meterEl.style.transform = `translate(${x}px, ${y}px)`;
       const fill = Math.min(1, m.t / 0.8);
       this.meterFill.style.height = `${fill * 100}%`;
-      this.meterFill.style.background = fill > 0.5 && fill < 0.63 ? '#38ff7a' : '#ffd166';
+      // A fadeaway's green window is narrower.
+      const fade = c.action.type === 'shoot' ? (c.action.fade ?? 0) : 0;
+      const lo = 0.5 + 0.03 * fade;
+      const hi = 0.63 - 0.05 * fade;
+      this.meterGreen.style.bottom = `${lo * 100}%`;
+      this.meterGreen.style.height = `${(hi - lo) * 100}%`;
+      this.meterFill.style.background = fill > lo && fill < hi ? '#38ff7a' : '#ffd166';
     } else {
       this.meterEl.style.display = 'none';
     }
@@ -148,14 +156,7 @@ export class Hud {
     const inbounding = !!ib && match.phase !== 'live' && ib.manual && match.controlled === ib.inbounder;
     const withBall = match.phase === 'live' && !!match.holder && match.holder === match.controlled;
     const offense = match.possession === 0;
-    const pad = s.lastDevice === 'gamepad' ? s.gamepadType : null;
-    const names = pad === 'ps'
-      ? { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2', skill: 'R-STICK', pick: 'L1' }
-      : pad
-        ? { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT', skill: 'R-STICK', pick: 'LB' }
-        : s.usingTouch
-          ? null
-          : { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT', skill: 'ARROWS', pick: 'F' };
+    const names = buttonNames(s);
     let hint = '';
     if (names && match.opts.userControlled && match.controlled) {
       if (inbounding) hint = `<b>${names.b}</b> Inbound pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · aim with the stick`;

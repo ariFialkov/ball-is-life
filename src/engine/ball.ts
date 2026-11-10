@@ -70,7 +70,8 @@ export class Ball {
   /** Physics step for free-flight modes (shot, pass, loose). */
   step(dt: number, now: number) {
     if (this.mode === 'held' || this.mode === 'dribble') return;
-    const sub = 3;
+    // Fixed-size substeps (at most 1/360s) so rim and glass contacts come out the same at any frame rate.
+    const sub = Math.max(3, Math.ceil(dt * 360 - 1e-6));
     const h = dt / sub;
     for (let i = 0; i < sub; i++) this.integrate(h, now);
     this.mesh.position.copy(this.pos);

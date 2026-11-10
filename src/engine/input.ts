@@ -474,3 +474,12 @@ export class TouchControls {
     this.el.remove();
   }
 }
+
+/** Button names for on-screen hints on the current device (null on touch, where the buttons are labelled). */
+export function buttonNames(s: InputState): { a: string; b: string; x: string; y: string; sprint: string; skill: string; pick: string } | null {
+  const pad = s.lastDevice === 'gamepad' ? s.gamepadType : null;
+  if (pad === 'ps') return { a: '□', b: '✕', x: '○', y: '△', sprint: 'R2', skill: 'R-STICK', pick: 'L1' };
+  if (pad) return { a: 'X', b: 'A', x: 'B', y: 'Y', sprint: 'RT', skill: 'R-STICK', pick: 'LB' };
+  if (s.usingTouch) return null;
+  return { a: 'SPACE', b: 'E', x: 'Q', y: 'R', sprint: 'SHIFT', skill: 'ARROWS', pick: 'F' };
+}

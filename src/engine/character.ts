@@ -21,7 +21,9 @@ export type AnimState =
   | 'celebrate'
   | 'dejected'
   | 'catch'
-  | 'screen';
+  | 'screen'
+  | 'freestyle'
+  | 'brace';
 
 /**
  * Pose channels. `spine` and `head` are the authored bends; at apply time they
@@ -63,6 +65,38 @@ const emptyPose = (): Pose => ({
   jump: 0,
   hipsYaw: 0,
 });
+
+/** In-air dunk moves for the 'freestyle' state. */
+export type AirMove = 'none' | 'windmill' | 'legs' | 'behind' | 'spin' | 'reverse';
+
+/**
+ * Freestyle dunk state, set by the dunk contest every frame: the body's height, where the ball
+ * is, which move is running and how far through it, and the gather/catch/slam phases.
+ */
+export interface FreestylePose {
+  /** Jump height (m). */
+  air: number;
+  /** 0..1 gather step before the takeoff (sink and bring the ball up). */
+  gather: number;
+  /** 0..1 knees up (a dunker's lead knee). */
+  tuck: number;
+  /** 0..1 straddle for clearing a teammate. */
+  hurdle: number;
+  /** Which hand has the ball: +1 r side, -1 l side, 0 both hands; null = no ball (waiting on a lob). */
+  hold: 1 | -1 | 0 | null;
+  /** 0..1 arms up toward the rim. */
+  reach: number;
+  /** 0..1 both arms up for an incoming lob. */
+  catchReach: number;
+  move: AirMove;
+  /** 0..1 progress through `move`. */
+  mu: number;
+  /** 0..1 the slam (arm hammers down, wrist snaps). */
+  slam: number;
+  /** IK target for the ball hand (world): the rim for the slam, the ball for a catch. */
+  ikTarget: THREE.Vector3 | null;
+  ikWeight: number;
+}
 
 /** States in which the body is on its feet and moving, so it reacts to the forces on it. */
 const GROUNDED_STATES = new Set<AnimState>(['idle', 'idleBall', 'run', 'dribble', 'defense', 'catch', 'screen']);
@@ -123,6 +157,12 @@ export class Character {
   dunkStyle: 'two' | 'tomahawk' | 'windmill' | 'legs' = 'two';
   /** Scales the dunk leap (dunk-contest athletes get up higher than an in-game dunk). */
   jumpBoost = 1;
+  /** Fadeaway amount for the 'shoot' state (0 = squared-up jumper). */
+  fade = 0;
+  /** Freestyle dunk pose (dunk contest). */
+  readonly fs: FreestylePose = { air: 0, gather: 0, tuck: 0, hurdle: 0, hold: 0, reach: 0, catchReach: 0, move: 'none', mu: 0, slam: 0, ikTarget: null, ikWeight: 0 };
+  /** Full turns added to each arm's shoulder pitch by windmills, so the circle keeps going forward. */
+  private armWrap = { l: 0, r: 0 };
 
   // --- Kinetics: the body reacts to the forces on it (sensed from how the root actually moves).
   private kPrev = new THREE.Vector3();
@@ -241,7 +281,7 @@ export class Character {
     target.hipsY += this.crouch;
     this.kineticPose(target);
     // Quick blend for transitions, snappier when entering explosive actions.
-    const rate = this.state === 'shoot' || this.state === 'dunk' || this.state === 'layup' || this.state === 'pass' || this.state === 'block' ? 20 : 12;
+    const rate = this.state === 'freestyle' ? 22 : this.state === 'shoot' || this.state === 'dunk' || this.state === 'layup' || this.state === 'pass' || this.state === 'block' ? 20 : 12;
     const k = Math.min(1, dt * rate);
     for (const b of BONES) {
       const c = this.current.bones[b];
@@ -255,6 +295,30 @@ export class Character {
     this.current.jump = target.jump;
     this.applyPose(this.current);
     this.dribbleStep(dt);
+    // Freestyle: the ball hand reaches its target (the rim for the slam, the ball on a lob).
+    const fs = this.fs;
+    if (this.state === 'freestyle' && fs.ikTarget && fs.ikWeight > 0.001) {
+      this.root.updateMatrixWorld(true);
+      const side = (fs.hold ? fs.hold : this.handedness) > 0 ? 'r' : 'l';
+      this.reachArm(side, fs.ikTarget, -0.35 + 1.3 * fs.slam, Math.min(1, fs.ikWeight));
+    }
+  }
+
+  /** A windmill leaves the arm a full turn ahead; this marks it so later poses continue from there. */
+  windmillDone(hand: 1 | -1) {
+    this.armWrap[hand > 0 ? 'r' : 'l'] += Math.PI * 2;
+  }
+
+  /** Back to plain angles after a freestyle dunk (call once the arms are down). */
+  unwrapArms() {
+    for (const side of ['l', 'r'] as const) {
+      const w = this.armWrap[side];
+      if (!w) continue;
+      this.armWrap[side] = 0;
+      const k = side === 'r' ? 'rShoulder' : 'lShoulder';
+      this.current.bones[k][0] -= w;
+      this.bones[k].rotation.x -= w;
+    }
   }
 
   /** Read the forces on the body from how the root moved, and drive the lean and hip-shift springs and cut/stop reactions. */
@@ -683,12 +747,14 @@ export class Character {
         b.rKnee = [0.85, 0, 0];
         b.spine = [0.32, sway, 0];
         b.head = [-0.15, -sway, 0];
-        b.lShoulder = [-0.35, 0, 1.25 + sway];
-        b.rShoulder = [-0.35, 0, -1.25 + sway];
-        b.lElbow = [-0.65, 0, 0];
-        b.rElbow = [-0.65, 0, 0];
-        b.lWrist = [-0.35, 0, 0];
-        b.rWrist = [-0.35, 0, 0];
+        // Active hands, arms out wide (in this rig +z swings the l arm toward the midline, -z the r arm):
+        // one hand up to contest, the other low in the passing lane, gently trading as the defender sways.
+        b.lShoulder = [-0.55 - sway * 2, 0, -0.95];
+        b.rShoulder = [-0.3 + sway * 2, 0, 0.95];
+        b.lElbow = [-0.75, 0, 0];
+        b.rElbow = [-0.55, 0, 0];
+        b.lWrist = [-0.3, 0, 0];
+        b.rWrist = [-0.3, 0, 0];
         p.hipsY = -0.2;
         if (m > 0.1) {
           // shuffle: smaller leg swing while staying low
@@ -726,6 +792,23 @@ export class Character {
         // Guide hand.
         b[L] = [-1.0 - 1.5 * rise + 0.9 * follow, 0, hand * (0.5 - 0.25 * rise)];
         b[LE] = [-1.6 * (1 - rise) - 0.2, 0, 0];
+        if (this.fade > 0) {
+          // Fadeaway: the torso falls back from the hips as he rises, the eyes stay on the rim, the
+          // shooting arm reaches further over the top, and the leg on the ball side kicks out
+          // in front for balance.
+          const f = this.fade * rise;
+          b.spine[0] -= 0.42 * f;
+          b.head[0] += 0.3 * f;
+          b[R][0] -= 0.25 * f;
+          b[L][0] -= 0.15 * f;
+          const kickHip = hand > 0 ? 'rHip' : 'lHip';
+          const kickKnee = hand > 0 ? 'rKnee' : 'lKnee';
+          const plantHip = hand > 0 ? 'lHip' : 'rHip';
+          b[kickHip][0] -= 0.75 * f;
+          b[kickKnee][0] += 0.55 * f;
+          b[plantHip][0] += 0.18 * f;
+          p.jump *= 1 - 0.12 * this.fade;
+        }
         break;
       }
       case 'layup': {
@@ -801,6 +884,129 @@ export class Character {
         }
         break;
       }
+      case 'freestyle': {
+        const fs = this.fs;
+        const ballHand = fs.hold === null || fs.hold === 0 ? hand : fs.hold;
+        const BA = ballHand > 0 ? 'rShoulder' : 'lShoulder';
+        const BE = ballHand > 0 ? 'rElbow' : 'lElbow';
+        const BW = ballHand > 0 ? 'rWrist' : 'lWrist';
+        const OA = ballHand > 0 ? 'lShoulder' : 'rShoulder';
+        const OE = ballHand > 0 ? 'lElbow' : 'rElbow';
+        const OW = ballHand > 0 ? 'lWrist' : 'rWrist';
+        // In this rig +z swings the l arm toward the midline and -z the r arm.
+        const inward = (side: number) => (side > 0 ? -1 : 1);
+        const wrapB = this.armWrap[ballHand > 0 ? 'r' : 'l'];
+        const wrapO = this.armWrap[ballHand > 0 ? 'l' : 'r'];
+        p.jump = fs.air;
+        // Gather: sink into the last step with the ball brought up to the chest.
+        const g = fs.gather;
+        p.hipsY = -0.17 * g;
+        b.lKnee = [0.15 + 0.85 * g, 0, 0];
+        b.rKnee = [0.15 + 0.85 * g, 0, 0];
+        b.lHip = [-0.45 * g, 0, -0.08];
+        b.rHip = [-0.45 * g, 0, 0.08];
+        b.spine = [0.15 + 0.25 * g, 0, 0];
+        // Airborne legs: a lead knee drives up; a hurdle splits the legs wide and high.
+        const tk = fs.tuck;
+        const lead = ballHand > 0 ? 'l' : 'r';
+        const trail = lead === 'l' ? 'r' : 'l';
+        b[`${lead}Hip`] = [-0.45 * g - 1.15 * tk, 0, lead === 'l' ? -0.1 : 0.1];
+        b[`${lead}Knee`] = [0.15 + 0.85 * g + 1.45 * tk, 0, 0];
+        b[`${trail}Hip`] = [-0.45 * g - 0.45 * tk, 0, trail === 'l' ? -0.1 : 0.1];
+        b[`${trail}Knee`] = [0.15 + 0.85 * g + 1.0 * tk, 0, 0];
+        if (fs.hurdle > 0) {
+          const hu = fs.hurdle;
+          b.lHip = [b.lHip[0] * (1 - hu) - 1.25 * hu, 0, b.lHip[2] * (1 - hu) - 0.75 * hu];
+          b.rHip = [b.rHip[0] * (1 - hu) - 1.25 * hu, 0, b.rHip[2] * (1 - hu) + 0.75 * hu];
+          b.lKnee = [b.lKnee[0] * (1 - hu) + 1.2 * hu, 0, 0];
+          b.rKnee = [b.rKnee[0] * (1 - hu) + 1.2 * hu, 0, 0];
+        }
+        // Arms: ball up from the chest toward the rim (two hands or one), the off arm out for balance.
+        const r = fs.reach;
+        const up = -0.9 - 2.35 * r;
+        const two = fs.hold === 0;
+        b[BA] = [up + wrapB, 0, inward(ballHand) * (two ? 0.35 - 0.2 * r : 0.12)];
+        b[BE] = [-1.25 * (1 - r) - 0.12, 0, 0];
+        b[BW] = [-0.35 * r, 0, 0];
+        if (two) {
+          b[OA] = [up + 0.15 + wrapO, 0, inward(-ballHand) * (0.35 - 0.2 * r)];
+          b[OE] = [-1.25 * (1 - r) - 0.12, 0, 0];
+          b[OW] = [-0.3 * r, 0, 0];
+        } else {
+          b[OA] = [-1.1 + wrapO, 0, -inward(-ballHand) * 0.75];
+          b[OE] = [-0.55, 0, 0];
+          b[OW] = [-0.2, 0, 0];
+        }
+        // Waiting on a lob: both arms up and out in front to take it.
+        if (fs.catchReach > 0) {
+          const c = fs.catchReach;
+          for (const [A, E, side, w] of [[BA, BE, ballHand, wrapB], [OA, OE, -ballHand, wrapO]] as const) {
+            b[A] = [b[A][0] * (1 - c) + (-2.5 + w) * c, 0, b[A][2] * (1 - c) + inward(side) * 0.15 * c];
+            b[E] = [b[E][0] * (1 - c) - 0.25 * c, 0, 0];
+          }
+        }
+        const mu = fs.mu;
+        const sm = smooth(mu);
+        const arc = Math.sin(Math.PI * mu);
+        switch (fs.move) {
+          case 'windmill': {
+            // The ball arm sweeps a full circle: forward, down past the hip, back and over the top.
+            b[BA] = [-1.5 + (2 * Math.PI - 1.7) * sm + wrapB, 0, inward(ballHand) * 0.18];
+            b[BE] = [-0.1, 0, 0];
+            b[BW] = [0.15, 0, 0];
+            b.chest = [0, -ballHand * 0.35 * arc, 0];
+            break;
+          }
+          case 'legs': {
+            // Knees come up high and the ball passes under them from one hand to the other.
+            b.lHip = [-1.55 * arc - 0.35, 0, -0.38 * arc];
+            b.rHip = [-1.55 * arc - 0.35, 0, 0.38 * arc];
+            b.lKnee = [1.8 * arc + 0.45, 0, 0];
+            b.rKnee = [1.8 * arc + 0.45, 0, 0];
+            b.spine = [0.2 + 0.6 * arc, 0, 0];
+            const dn = arc;
+            b[BA] = [b[BA][0] * (1 - dn) + (-0.25 + wrapB) * dn, 0, inward(ballHand) * 0.3 * dn];
+            b[BE] = [b[BE][0] * (1 - dn) - 0.2 * dn, 0, 0];
+            b[OA] = [b[OA][0] * (1 - dn) + (-0.3 + wrapO) * dn, 0, inward(-ballHand) * 0.3 * dn];
+            b[OE] = [b[OE][0] * (1 - dn) - 0.2 * dn, 0, 0];
+            break;
+          }
+          case 'behind': {
+            // The ball goes round the back: the ball arm reaches behind the hips, the other takes it there.
+            const back = arc;
+            b[BA] = [b[BA][0] * (1 - back) + (0.55 + wrapB) * back, 0, inward(ballHand) * 0.65 * back];
+            b[BE] = [b[BE][0] * (1 - back) - 1.1 * back, 0, 0];
+            b[OA] = [b[OA][0] * (1 - back) + (0.5 + wrapO) * back, 0, inward(-ballHand) * 0.65 * back];
+            b[OE] = [b[OE][0] * (1 - back) - 1.1 * back, 0, 0];
+            b.chest = [0, ballHand * 0.3 * arc, 0];
+            b.spine[0] += 0.15 * arc;
+            break;
+          }
+          case 'spin':
+          case 'reverse': {
+            // The body turns (the caller rotates the root); ball tight overhead, knees tucked.
+            b.lKnee[0] += 0.4 * arc;
+            b.rKnee[0] += 0.4 * arc;
+            b.spine[0] += 0.1 * arc;
+            break;
+          }
+          default:
+            break;
+        }
+        // The slam: arm(s) hammer down through the rim, wrists snap, chest folds over.
+        if (fs.slam > 0) {
+          const sl = fs.slam;
+          b[BA][0] += 1.2 * sl;
+          b[BW] = [b[BW][0] + 1.1 * sl, 0, 0];
+          if (two) {
+            b[OA][0] += 1.2 * sl;
+            b[OW] = [b[OW][0] + 1.0 * sl, 0, 0];
+          }
+          b.spine[0] += 0.3 * sl;
+        }
+        b.head = [-0.35 * Math.max(r, fs.catchReach) + 0.3 * fs.slam, 0, 0];
+        break;
+      }
       case 'pass': {
         const dur = 0.42;
         const u = Math.min(1, t / dur);
@@ -867,6 +1073,21 @@ export class Character {
         b.rKnee = [0.2, 0, 0];
         break;
       }
+      case 'brace': {
+        // Bent over with hands on the knees, back flat: a teammate to be jumped over.
+        b.spine = [1.15, 0, 0];
+        b.head = [-0.75, 0, 0];
+        b.lHip = [-0.75, 0, -0.18];
+        b.rHip = [-0.75, 0, 0.18];
+        b.lKnee = [0.75, 0, 0];
+        b.rKnee = [0.75, 0, 0];
+        b.lShoulder = [-0.2, 0, -0.15];
+        b.rShoulder = [-0.2, 0, 0.15];
+        b.lElbow = [-0.15, 0, 0];
+        b.rElbow = [-0.15, 0, 0];
+        p.hipsY = -0.2;
+        break;
+      }
       case 'dejected': {
         b.spine = [0.45, 0, 0];
         b.head = [0.5, 0, 0];
@@ -884,17 +1105,20 @@ export class Character {
         break;
       }
       case 'screen': {
-        // Setting a pick: wide, low base, arms crossed over the chest, braced for contact.
+        // Setting a pick: wide, low base, braced for contact.
         b.lHip = [-0.28, 0, -0.32];
         b.rHip = [-0.28, 0, 0.32];
         b.lKnee = [0.5, 0, 0];
         b.rKnee = [0.5, 0, 0];
         b.spine = [0.12, 0, 0];
         b.head = [0.05, 0, 0];
-        b.lShoulder = [-1.0, 0.5, -0.35];
-        b.rShoulder = [-1.0, -0.5, 0.35];
-        b.lElbow = [-1.75, 0, 0];
-        b.rElbow = [-1.75, 0, 0];
+        // Forearms folded across the stomach, protecting the body for the contact.
+        b.lShoulder = [-0.2, 0.9, 0.1];
+        b.rShoulder = [-0.2, -0.9, -0.1];
+        b.lElbow = [-1.65, 0, 0];
+        b.rElbow = [-1.65, 0, 0];
+        b.lWrist = [0.1, 0, 0];
+        b.rWrist = [0.1, 0, 0];
         p.hipsY = -0.09;
         break;
       }
