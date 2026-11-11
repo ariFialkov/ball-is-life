@@ -48,6 +48,8 @@ Demo credits only. The game starts you with 1,000 CR; Settings has a `+1000 DEMO
 | **Playoffs** | Entry stake into an 8-team single-elimination bracket. | Ladder: out in QF 0x · reach SF 1.2x · reach Final 3x · Champion 10x. Cash out between rounds at the current ladder value. |
 | **All-Star** | Entry stake into the 3-Point Contest, Slam Dunk Contest or Skills Challenge against three league stars, in the real formats (a first round, then a final). You go first in every round; the bots go after. | Champion 3x (dunk 4x), runner-up 1.5x (dunk 1.2x). |
 
+**2 Players (local co-op).** On a desktop with at least one controller connected, Quick Game shows a **2 PLAYERS** toggle: you and a friend play on the same team, on the same screen, against the bots (the opponents are always bots, so the result still lands on the ticket exactly like a solo game). With two controllers each player gets one (the keyboard also drives P1); with one controller, one player uses it and the other the keyboard, and **SWAP** flips who gets which. Each player has their own coloured ring and P1 / P2 tag (cyan and magenta), their own shot meter and their own context hints. Passing to a bot hands that bot to the passer; passing to your friend keeps you on your man. On defense each player keeps their own man and Cross / A / E switches to the nearest free teammate (never the other player's man). A player whose controller disconnects is handed to the AI until it is back.
+
 Twelve fictional teams with full 13-man rosters, procedural crests, home/away kits, arenas and play styles live in `src/data/teams.ts`.
 
 ## How the betting layer works
@@ -97,6 +99,8 @@ Dribble moves are read relative to the way the ball handler faces:
 | Straight back | Step-back |
 
 The ball really changes hands: crossovers bounce in front, between-the-legs under the body and behind-the-back behind it, and the handler also switches hands on their own when driving to the other side. Chained moves are more likely to freeze a defender; a defender reaching from the ball side gets more steals than one reaching across the body.
+
+**Shot meter.** Holding Shoot on a jumper brings up a slim meter beside the shooter that fills while you hold. The bright band is the green window (the meter and the release use the same maths), the faint band around it is a good release; let go in the band. The meter freezes where you let go and grades the shot: a **green** release flashes the whole meter green, otherwise it reads GOOD, EARLY or LATE. A fadeaway's green band is visibly narrower. The All-Star 3-Point Contest and the Skills Challenge shots use the same meter.
 
 Near the rim, Shoot triggers a layup or dunk automatically. Shooting while moving away from the basket is a **fadeaway**: the shooter leans back and drifts away, which buys separation from a close defender, but it is harder to make and the green window is narrower (skilled AI scorers use it when crowded in the mid-range). On offense the controlled player follows the ball; on defense it auto-switches to the man guarding the ball and can be switched manually.
 

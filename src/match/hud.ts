@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Match, MatchEvent } from './match.ts';
-import { formatClock } from './match.ts';
+import { formatClock, shotWindow, SHOT_IDEAL } from './match.ts';
 import { buttonNames, type Input } from '../engine/input.ts';
 import { teamLogoDataUrl } from '../data/logos.ts';
 import type { TeamDef } from '../data/teams.ts';
@@ -20,10 +20,10 @@ export class Hud {
   private periodEl: HTMLElement;
   private shotEl: HTMLElement;
   private toastEl: HTMLElement;
-  private meterEl: HTMLElement;
-  private meterFill: HTMLElement;
-  private meterGreen: HTMLElement;
-  private feedbackEl: HTMLElement;
+  /** One shot meter per user. */
+  private meters: { el: HTMLElement; label: HTMLElement; state: string }[] = [];
+  /** Co-op: the P1 / P2 tags over each player's athlete. */
+  private tags: HTMLElement[] = [];
   private hintEl: HTMLElement;
   private stripEl: HTMLElement;
   private bannerEl: HTMLElement;
@@ -64,8 +64,8 @@ export class Hud {
       <div class="hud-chyron"></div>
       <div class="hud-open"></div>
       <div class="hud-replay"><div class="lb top"></div><div class="lb bot"></div><div class="replay-bug"><b>REPLAY</b><span></span></div></div>
-      <div class="hud-meter"><div class="hud-meter-fill"></div><div class="hud-meter-green"></div></div>
-      <div class="hud-feedback"></div>
+      <div class="coop-tags"></div>
+      <div class="shot-meters"></div>
       <div class="hud-hint"></div>
       <div class="hud-debug"></div>`;
     root.appendChild(this.el);
@@ -76,10 +76,20 @@ export class Hud {
     this.periodEl = q('.period');
     this.shotEl = q('.shot');
     this.toastEl = q('.hud-toast');
-    this.meterEl = q('.hud-meter');
-    this.meterFill = q('.hud-meter-fill');
-    this.meterGreen = q('.hud-meter-green');
-    this.feedbackEl = q('.hud-feedback');
+    for (const u of match.users) {
+      const m = document.createElement('div');
+      m.className = `shot-meter p${u.id + 1}${match.coop ? ' coop' : ''}`;
+      m.innerHTML = `<i class="sm-tag">P${u.id + 1}</i><div class="sm-bar"><div class="sm-good"></div><div class="sm-green"></div><div class="sm-fill"></div><div class="sm-tip"></div></div><div class="sm-label"></div>`;
+      q('.shot-meters').append(m);
+      this.meters.push({ el: m, label: m.querySelector('.sm-label') as HTMLElement, state: '' });
+      if (match.coop) {
+        const t = document.createElement('div');
+        t.className = `coop-tag p${u.id + 1}`;
+        t.innerHTML = `<b>P${u.id + 1}</b><i></i>`;
+        q('.coop-tags').append(t);
+        this.tags.push(t);
+      }
+    }
     this.hintEl = q('.hud-hint');
     this.stripEl = q('.hud-strip');
     this.bannerEl = q('.hud-banner');
@@ -210,7 +220,6 @@ export class Hud {
       }
       if (e.type === 'period') this.scoreGraphic(match, e.text, e.text === 'HALFTIME' ? 4.5 : 3, e.text === 'HALFTIME');
       if (e.type === 'end') this.scoreGraphic(match, 'FINAL', 3.5, true);
-      if (e.type === 'green') this.toast('GREEN!', '#38ff7a');
     }
     if (this.chyronTimer > 0) {
       this.chyronTimer -= dt;
@@ -224,33 +233,7 @@ export class Hud {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) this.bannerEl.classList.remove('show');
     }
-    // Shot meter projected next to the shooter.
-    const m = match.meter;
-    const c = match.controlled;
-    if (m.active && c) {
-      this.meterEl.style.display = '';
-      const p = this.tmp.set(c.pos.x, 2.3, c.pos.z).project(this.camera);
-      const x = (p.x * 0.5 + 0.5) * window.innerWidth + 40;
-      const y = (-p.y * 0.5 + 0.5) * window.innerHeight - 60;
-      this.meterEl.style.transform = `translate(${x}px, ${y}px)`;
-      const fill = Math.min(1, m.t / 0.8);
-      this.meterFill.style.height = `${fill * 100}%`;
-      // A fadeaway's green window is narrower.
-      const fade = c.action.type === 'shoot' ? (c.action.fade ?? 0) : 0;
-      const lo = 0.5 + 0.03 * fade;
-      const hi = 0.63 - 0.05 * fade;
-      this.meterGreen.style.bottom = `${lo * 100}%`;
-      this.meterGreen.style.height = `${(hi - lo) * 100}%`;
-      this.meterFill.style.background = fill > lo && fill < hi ? '#38ff7a' : '#ffd166';
-    } else {
-      this.meterEl.style.display = 'none';
-    }
-    const fb = match.shotFeedback;
-    if (fb && match.time - fb.at < 1.2) {
-      this.feedbackEl.textContent = fb.text;
-      this.feedbackEl.style.color = fb.color;
-      this.feedbackEl.style.opacity = String(1 - (match.time - fb.at) / 1.2);
-    } else this.feedbackEl.style.opacity = '0';
+    this.updateMeters(match);
     // Control hints.
     const s = this.input.state;
     const ib = match.inbound;
@@ -259,7 +242,8 @@ export class Hud {
     const offense = match.possession === 0;
     const names = buttonNames(s);
     let hint = '';
-    if (names && match.opts.userControlled && match.controlled) {
+    if (match.coop) hint = this.coopHints(match);
+    else if (names && match.opts.userControlled && match.controlled) {
       if (inbounding) hint = `<b>${names.b}</b> Inbound pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · aim with the stick`;
       else if (withBall) hint = `<b>${names.a}</b> Shoot · <b>${names.b}</b> Pass · <b>${names.x}</b> Bounce · <b>${names.y}</b> Lob · <b>${names.skill}</b> Moves · <b>${names.pick}</b> Call screen · <b>${names.sprint}</b> Sprint`;
       else if (offense) hint = `<b>${names.b}</b> Call for the ball · <b>${names.pick}</b> Set screen (stand still) · <b>${names.y}</b> Rebound · <b>${names.sprint}</b> Sprint`;
@@ -282,6 +266,83 @@ export class Hud {
 
   destroy() {
     this.el.remove();
+  }
+
+  /** Screen position of a world point (null when it is behind the camera). */
+  private screen(x: number, y: number, z: number): [number, number] | null {
+    const p = this.tmp.set(x, y, z).project(this.camera);
+    if (p.z > 1) return null;
+    return [(p.x * 0.5 + 0.5) * window.innerWidth, (-p.y * 0.5 + 0.5) * window.innerHeight];
+  }
+
+  /**
+   * The shot meter: a slim skewed bar beside the shooter that fills while the button is held. The
+   * bright band is the green window (the same maths as the release), the faint band around it is a
+   * good release. It freezes where the button was let go, then grades the shot: a green release
+   * flashes the whole meter green, otherwise it reads GOOD, EARLY or LATE.
+   */
+  private updateMeters(match: Match) {
+    const FULL = 0.6;
+    const replaying = this.el.classList.contains('replaying') || this.el.classList.contains('opening');
+    match.users.forEach((u, i) => {
+      const mt = this.meters[i];
+      const m = u.meter;
+      const a = u.athlete;
+      const show = !!a && !replaying && (m.active || (m.quality !== null && match.time - m.endedAt < 1.1));
+      mt.el.classList.toggle('on', show);
+      if (!show || !a) return;
+      const at = this.screen(a.pos.x, 2.0, a.pos.z);
+      if (at) mt.el.style.transform = `translate3d(${(at[0] + 34).toFixed(1)}px, ${(at[1] - 52).toFixed(1)}px, 0)`;
+      const w = shotWindow(m.fade);
+      const pct = (t: number) => `${(Math.min(1, Math.max(0, t / FULL)) * 100).toFixed(2)}%`;
+      const st = mt.el.style;
+      st.setProperty('--g0', pct(SHOT_IDEAL - 0.1 * w));
+      st.setProperty('--g1', pct(SHOT_IDEAL + 0.1 * w));
+      st.setProperty('--k0', pct(SHOT_IDEAL - 0.35 * w));
+      st.setProperty('--k1', pct(SHOT_IDEAL + 0.35 * w));
+      const r = m.release ?? (m.active ? m.t : 0.9);
+      st.setProperty('--f', pct(r));
+      let state: string;
+      if (m.active) state = Math.abs(r - SHOT_IDEAL) < 0.1 * w ? 'live in-green' : 'live';
+      else {
+        const q = m.quality ?? 0;
+        state = q > 0.9 ? 'done g-green' : q > 0.65 ? 'done g-good' : 'done g-off';
+        mt.label.textContent = q > 0.9 ? 'GREEN' : q > 0.65 ? 'GOOD' : r < SHOT_IDEAL ? 'EARLY' : 'LATE';
+      }
+      if (state !== mt.state) {
+        mt.el.classList.remove('live', 'in-green', 'done', 'g-green', 'g-good', 'g-off');
+        mt.el.classList.add(...state.split(' '));
+        if (state === 'live') mt.label.textContent = '';
+        mt.state = state;
+      }
+    });
+    // Co-op name tags over each person's player.
+    match.users.forEach((u, i) => {
+      const tag = this.tags[i];
+      if (!tag) return;
+      const a = u.athlete;
+      const at = a && a.onCourt && !replaying ? this.screen(a.pos.x, a.def.height + 0.42, a.pos.z) : null;
+      tag.style.opacity = at ? '1' : '0';
+      if (at) tag.style.transform = `translate3d(${at[0].toFixed(1)}px, ${at[1].toFixed(1)}px, 0) translate(-50%, -100%)`;
+    });
+  }
+
+  /** Co-op: a short context line per player, in their own device's button names. */
+  private coopHints(match: Match): string {
+    return match.users
+      .map((u) => {
+        const n = buttonNames(this.input.players[u.id]);
+        const a = u.athlete;
+        if (!n || !a) return '';
+        const ib = match.inbound;
+        let line: string;
+        if (ib && match.phase !== 'live' && ib.manual && a === ib.inbounder) line = `<b>${n.b}</b> Inbound · <b>${n.y}</b> Lob`;
+        else if (match.holder === a) line = `<b>${n.a}</b> Shoot · <b>${n.b}</b> Pass · <b>${n.y}</b> Lob · <b>${n.skill}</b> Moves`;
+        else if (match.possession === 0) line = `<b>${n.b}</b> Call for it · <b>${n.pick}</b> Screen · <b>${n.sprint}</b> Sprint`;
+        else line = `<b>${n.a}</b> Steal · <b>${n.y}</b> Block · <b>${n.b}</b> Switch`;
+        return `<span class="ph"><i class="ptag p${u.id + 1}">P${u.id + 1}</i> ${line}</span>`;
+      })
+      .join('');
   }
 }
 

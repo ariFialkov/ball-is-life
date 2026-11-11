@@ -9,6 +9,7 @@ import { resultsScreen } from './results.ts';
 import { menuScreen } from './menu.ts';
 import { audio } from '../../engine/audio.ts';
 import type { RoundTicket } from '../../core/casino/types.ts';
+import { coopAvailable, coopDevices, devicesLabel } from '../coop.ts';
 
 export function quickGameScreen(app: App): Screen {
   const f = frame({ title: 'QUICK GAME', kicker: 'MONEYLINE · ONE GAME', onBack: () => app.show(menuScreen(app)), split: true });
@@ -25,6 +26,45 @@ export function quickGameScreen(app: App): Screen {
   const start = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'PLACE BET & TIP OFF');
   const next = h('button', { class: 'btn primary', 'data-nav-advance': '' }, 'NEXT: PICK OPPONENT ›');
   const info = h('div', { class: 'panel volt matchup' });
+  // Local co-op (desktop with a controller): two people on your team against the bots.
+  const coopBtn = h('button', { class: 'btn coop-toggle' });
+  const swapBtn = h('button', { class: 'btn small' }, 'SWAP');
+  const coopLine = h('div', { class: 'coop-line' });
+  let coopShown: string | null = null;
+  const renderCoop = () => {
+    const avail = coopAvailable(app);
+    const on = avail && store.data.settings.coop;
+    const key = `${avail}|${on}|${store.data.settings.coopSwap}|${app.input.pads.join(',')}`;
+    if (key === coopShown) return;
+    coopShown = key;
+    coopBtn.style.display = avail ? '' : 'none';
+    coopBtn.classList.toggle('on', on);
+    coopBtn.innerHTML = `<span>${on ? '2 PLAYERS · ON' : '2 PLAYERS · OFF'}</span>`;
+    coopLine.style.display = on ? '' : 'none';
+    coopLine.innerHTML = '';
+    if (on) {
+      const [p1, p2] = coopDevices(app.input, store.data.settings.coopSwap);
+      coopLine.append(
+        h('span', { class: 'ptag p1' }, 'P1'),
+        h('span', {}, devicesLabel(app.input, p1)),
+        h('span', { class: 'ptag p2' }, 'P2'),
+        h('span', {}, devicesLabel(app.input, p2)),
+        ...(app.input.pads.length >= 1 ? [swapBtn] : []),
+      );
+    }
+  };
+  coopBtn.onclick = () => {
+    audio.click();
+    store.data.settings.coop = !store.data.settings.coop;
+    store.save();
+    renderCoop();
+  };
+  swapBtn.onclick = () => {
+    audio.click();
+    store.data.settings.coopSwap = !store.data.settings.coopSwap;
+    store.save();
+    renderCoop();
+  };
 
   const refreshOdds = () => {
     const f = quickGameOdds(mine.ovr, opp.ovr);
@@ -62,7 +102,7 @@ export function quickGameScreen(app: App): Screen {
     for (const p of starters) table.append(h('tr', {}, h('td', {}, `#${p.number} ${p.name}`), h('td', {}, p.pos), h('td', {}, String(p.ratings.ovr)), h('td', {}, String(p.ratings.three)), h('td', {}, String(p.ratings.dunk)), h('td', {}, String(p.ratings.def))));
     // Matchup header: the two logos, big.
     const vs = h('div', { class: 'vs-row' }, logoImg(mine, 54), h('div', { class: 'vs-names' }, h('div', { class: 'title mid' }, `${mine.abbr} vs ${opp.abbr}`), h('div', { class: 'kicker' }, `${opp.arena.name} · ${t.city} ${t.name} ${t.ovr} OVR`)), logoImg(opp, 54));
-    info.append(vs, table);
+    info.append(vs, table, coopLine);
   };
   next.onclick = () => {
     audio.click();
@@ -79,25 +119,31 @@ export function quickGameScreen(app: App): Screen {
     audio.click();
     if (!casino.canBet(bet.bet)) return;
     const ticket = casino.placeBet('quick', bet.bet, { userOvr: mine.ovr, oppOvr: opp.ovr, mine: mine.id, opp: opp.id });
-    launchQuickGame(app, ticket, mine, opp);
+    launchQuickGame(app, ticket, mine, opp, store.data.settings.coop && coopAvailable(app));
   };
   const betBox = h('div', { class: 'panel gold' }, h('h3', {}, 'MONEYLINE'), h('div', { class: 'row nowrap' }, oddsEl, h('div', { class: 'grow muted', style: 'font-size:var(--fs-s)' }, payoutEl)), bet.el);
   f.body.append(stepLabel, grid, betBox);
   f.stage.append(h('div', { class: 'grow' }), info);
-  f.foot.append(next, start);
+  f.foot.append(coopBtn, next, start);
   renderGrid();
   refreshOdds();
   renderInfo(mine);
-  return { el: f.el };
+  renderCoop();
+  return {
+    el: f.el,
+    update() {
+      renderCoop();
+    },
+  };
 }
 
-export function launchQuickGame(app: App, ticket: RoundTicket, mine: TeamDef, opp: TeamDef) {
+export function launchQuickGame(app: App, ticket: RoundTicket, mine: TeamDef, opp: TeamDef, coop = false) {
   if (ticket.outcome.kind !== 'quick') throw new Error('bad ticket');
   const f = ticket.outcome.fractionalOdds;
   app.show(
     gameScreen(app, {
-      matchOptions: { teams: [mine, opp], script: ticket.outcome.script, quarterLength: store.data.settings.quarterLength, homeIndex: 1, seed: `quick:${ticket.id}` },
-      strip: `QUICK GAME · ${fmtCredits(ticket.bet)} CR @ ${f.toFixed(2)}:1 · WIN PAYS ${fmtCredits(ticket.bet * (1 + f))}`,
+      matchOptions: { teams: [mine, opp], script: ticket.outcome.script, quarterLength: store.data.settings.quarterLength, homeIndex: 1, seed: `quick:${ticket.id}`, coop },
+      strip: `${coop ? '2 PLAYERS · ' : ''}QUICK GAME · ${fmtCredits(ticket.bet)} CR @ ${f.toFixed(2)}:1 · WIN PAYS ${fmtCredits(ticket.bet * (1 + f))}`,
       onFinish: (r) => {
         // Settle on the on-court result (the director guarantees it matches the ticket).
         const mult = r.userWon ? 1 + f : 0;

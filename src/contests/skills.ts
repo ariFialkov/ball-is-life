@@ -991,7 +991,7 @@ class SkillsChallenge {
           s.setMeter(r.meter.t01, r.meter.greenBand);
           if (!input.held.a || r.meter.t01 > 1.15) {
             const q = r.meter.release();
-            s.setMeter(null);
+            s.meterResult(q, r.meter.early);
             s.prompt.textContent = q > 0.9 ? 'GREEN!' : q > 0.65 ? 'GOOD RELEASE' : 'OFF';
             this.shoot(r, 'logo', q);
           }
@@ -1017,7 +1017,7 @@ class SkillsChallenge {
           s.setMeter(r.meter.t01, r.meter.greenBand);
           if (!input.held.a || r.meter.t01 > 1.15) {
             const q = r.meter.release();
-            s.setMeter(null);
+            s.meterResult(q, r.meter.early);
             s.prompt.textContent = q > 0.9 ? 'GREEN!' : q > 0.65 ? 'GOOD RELEASE' : 'OFF';
             this.shoot(r, 'three', q);
           }

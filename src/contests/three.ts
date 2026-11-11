@@ -491,7 +491,7 @@ class ThreePointContest {
             s.setMeter(t.meter.t01, t.meter.greenBand);
             if (!input.held.a || t.meter.t01 > 1.15) {
               const q = t.meter.release();
-              s.setMeter(null);
+              s.meterResult(q, t.meter.early);
               this.release(t, q);
             }
           } else if (t.t >= t.releaseAt) this.release(t, null);

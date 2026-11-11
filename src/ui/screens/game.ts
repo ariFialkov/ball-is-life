@@ -5,6 +5,7 @@ import { Hud } from '../../match/hud.ts';
 import { audio } from '../../engine/audio.ts';
 import { ReplayRecorder, type Clip } from '../../match/replay.ts';
 import * as THREE from 'three';
+import { coopDevices } from '../coop.ts';
 
 export interface GameResult {
   scores: [number, number];
@@ -23,6 +24,8 @@ export interface GameScreenOptions {
 export function gameScreen(app: App, opts: GameScreenOptions): Screen {
   app.takeScene();
   const el = h('div', { class: 'game-root' });
+  // Local co-op: each player reads only their own devices (menus and pause keep reading everything).
+  app.input.coop = opts.matchOptions.coop ? coopDevices(app.input, store.data.settings.coopSwap) : null;
   const match = new Match({
     ...opts.matchOptions,
     userControlled: true,
@@ -164,6 +167,7 @@ export function gameScreen(app: App, opts: GameScreenOptions): Screen {
   };
 
   const destroy = () => {
+    app.input.coop = null;
     hud.destroy();
     app.touch.setVisible(false);
     dialog?.remove();

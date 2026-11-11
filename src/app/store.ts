@@ -8,6 +8,10 @@ export interface Settings {
   sound: boolean;
   touch: 'auto' | 'on' | 'off';
   quality: 'auto' | 'low' | 'high';
+  /** Quick Game: two people on the same team (desktop, at least one controller). */
+  coop: boolean;
+  /** Co-op with one controller: false = P1 on the controller and P2 on the keyboard; true = the other way round. */
+  coopSwap: boolean;
 }
 
 export interface CareerGameLog {
@@ -89,7 +93,7 @@ function defaults(): SaveData {
   return {
     version: 1,
     balance: 1000,
-    settings: { quarterLength: 120, camera: '2k', sound: true, touch: 'auto', quality: 'auto' },
+    settings: { quarterLength: 120, camera: '2k', sound: true, touch: 'auto', quality: 'auto', coop: false, coopSwap: false },
     operator: { ...DEFAULT_OPERATOR },
     nonce: 0,
     ledger: [],

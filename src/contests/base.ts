@@ -65,6 +65,10 @@ export class ReleaseMeter {
     this.active = false;
     return clamp(1 - Math.abs(this.t01 - this.sweet) / this.window, 0, 1);
   }
+  /** The last release came before the sweet spot. */
+  get early(): boolean {
+    return this.t01 < this.sweet;
+  }
   /** Fraction of the bar that is the green window (for the HUD). */
   get greenBand(): [number, number] {
     const g = this.window * 0.1;
@@ -96,8 +100,10 @@ export class ContestScene {
   readonly strip: HTMLElement;
   readonly board: HTMLElement;
   readonly meter: HTMLElement;
-  readonly meterFill: HTMLElement;
-  readonly meterGreen: HTMLElement;
+  private meterLabel: HTMLElement;
+  /** A graded release stays on screen until this time (performance.now ms). */
+  private meterResultUntil = 0;
+  private meterHideTimer = 0;
   readonly skipBtn: HTMLButtonElement;
   readonly rng: Rng;
   time = 0;
@@ -120,7 +126,7 @@ export class ContestScene {
       <div class="contest-prompt"></div>
       <div class="contest-sub"></div>
       <div class="contest-board"></div>
-      <div class="hud-meter"><div class="hud-meter-fill"></div><div class="hud-meter-green"></div></div>
+      <div class="shot-meter"><i class="sm-tag"></i><div class="sm-bar"><div class="sm-good"></div><div class="sm-green"></div><div class="sm-fill"></div><div class="sm-tip"></div></div><div class="sm-label"></div></div>
       <button class="contest-skip">SKIP ›</button>`;
     app.overlay.appendChild(this.hud);
     const q = (s: string) => this.hud.querySelector(s) as HTMLElement;
@@ -129,9 +135,11 @@ export class ContestScene {
     this.prompt = q('.contest-prompt');
     this.sub = q('.contest-sub');
     this.board = q('.contest-board');
-    this.meter = q('.hud-meter');
-    this.meterFill = q('.hud-meter-fill');
-    this.meterGreen = q('.hud-meter-green');
+    this.meter = q('.shot-meter');
+    this.meterLabel = q('.sm-label');
+    this.meter.style.left = '50%';
+    this.meter.style.top = '56%';
+    this.meter.style.transform = 'translate(80px, -45px)';
     this.skipBtn = q('.contest-skip') as HTMLButtonElement;
     this.skipBtn.style.display = 'none';
     this.skipBtn.onclick = () => (this.skipFlag = true);
@@ -255,21 +263,45 @@ export class ContestScene {
     this.app.camera.prime(this.app.camera.manualLook);
   }
 
+  /** Show the filling meter (t01 = 0..1 of the bar), or hide it with null (a graded release stays up briefly). */
   setMeter(t01: number | null, band?: [number, number]) {
+    const st = this.meter.style;
     if (t01 === null) {
-      this.meter.style.display = 'none';
+      if (performance.now() < this.meterResultUntil) return;
+      this.meter.classList.remove('on');
       return;
     }
-    this.meter.style.display = '';
-    this.meter.style.left = '50%';
-    this.meter.style.top = '56%';
-    this.meter.style.transform = 'translate(80px, -45px)';
-    this.meterFill.style.height = `${Math.min(1, t01) * 100}%`;
+    clearTimeout(this.meterHideTimer);
+    this.meterResultUntil = 0;
+    const pct = (x: number) => `${(Math.min(1, Math.max(0, x)) * 100).toFixed(2)}%`;
+    st.setProperty('--f', pct(t01));
     if (band) {
-      this.meterGreen.style.bottom = `${band[0] * 100}%`;
-      this.meterGreen.style.height = `${(band[1] - band[0]) * 100}%`;
-      this.meterFill.style.background = t01 >= band[0] && t01 <= band[1] ? '#38ff7a' : '#ffd166';
+      // The faint "good" band around the green window (quality > 0.65 is 3.5x the green half-width).
+      const mid = (band[0] + band[1]) / 2;
+      const half = (band[1] - band[0]) / 2;
+      st.setProperty('--g0', pct(band[0]));
+      st.setProperty('--g1', pct(band[1]));
+      st.setProperty('--k0', pct(mid - half * 3.5));
+      st.setProperty('--k1', pct(mid + half * 3.5));
     }
+    const inGreen = !!band && t01 >= band[0] && t01 <= band[1];
+    this.meter.classList.remove('done', 'g-green', 'g-good', 'g-off');
+    this.meter.classList.add('on', 'live');
+    this.meter.classList.toggle('in-green', inGreen);
+    this.meterLabel.textContent = '';
+  }
+
+  /** Grade a release on the meter: a green flashes, otherwise GOOD / EARLY / LATE, then it fades out. */
+  meterResult(quality: number, early: boolean) {
+    const grade = quality > 0.9 ? 'g-green' : quality > 0.65 ? 'g-good' : 'g-off';
+    this.meter.classList.remove('live', 'in-green');
+    this.meter.classList.add('on', 'done', grade);
+    this.meterLabel.textContent = quality > 0.9 ? 'GREEN' : quality > 0.65 ? 'GOOD' : early ? 'EARLY' : 'LATE';
+    this.meterResultUntil = performance.now() + 1000;
+    clearTimeout(this.meterHideTimer);
+    this.meterHideTimer = window.setTimeout(() => {
+      if (performance.now() >= this.meterResultUntil) this.meter.classList.remove('on');
+    }, 1050);
   }
 
   /** Bot turns can be skipped (Cross / A / Enter or the SKIP button); the rest is simulated with the same physics. */

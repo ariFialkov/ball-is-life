@@ -50,6 +50,39 @@ export interface InputState {
 
 type Dir = 'left' | 'right' | 'up' | 'down';
 
+/** A device that can drive a co-op player: the keyboard, or a controller by Gamepad.index. */
+export type InputSource = 'kb' | number;
+
+/** One device's reading for a frame, before menus or players combine them. */
+interface Raw {
+  mx: number;
+  my: number;
+  moving: boolean;
+  held: Record<Action, boolean>;
+  tapped: Set<Action>;
+  flick: { x: number; y: number } | null;
+  navDir: Dir | null;
+  confirm: boolean;
+  back: boolean;
+  active: boolean;
+}
+
+/** Per-controller edge memory. */
+interface PadMem {
+  prev: boolean[];
+  rightPrev: number;
+  flickCd: number;
+}
+
+function padType(id: string): InputState['gamepadType'] {
+  const l = id.toLowerCase();
+  return /054c|dualsense|dualshock|playstation|wireless controller/.test(l) ? 'ps' : /xbox|045e|xinput/.test(l) ? 'xbox' : 'generic';
+}
+
+function blankState(): InputState {
+  return { move: { x: 0, y: 0 }, sprint: false, held: emptyActions(), pressed: emptyActions(), released: emptyActions(), flick: null, nav: emptyNav(), gamepadConnected: false, gamepadType: null, usingTouch: false, lastDevice: 'keyboard' };
+}
+
 const KEYMAP: Record<string, Action | Dir> = {
   KeyW: 'up',
   KeyS: 'down',
@@ -111,9 +144,17 @@ export class Input {
   private touchMove = { x: 0, y: 0 };
   private touchHeld = emptyActions();
   private touchFlick: { x: number; y: number } | null = null;
-  private padPrev: boolean[] = [];
-  private rightStickPrev = 0;
-  private flickCooldown = 0;
+  private padMem = new Map<number, PadMem>();
+  /** Connected controllers (Gamepad.index), in the browser's order. */
+  pads: number[] = [];
+  /**
+   * Local co-op: the devices that drive each player ('kb' is the keyboard, a number is a controller's
+   * Gamepad.index). Null outside co-op. Menus keep reading the combined `state`.
+   */
+  coop: [InputSource[], InputSource[]] | null = null;
+  /** Each co-op player's own input, filled by `poll` while `coop` is set. */
+  readonly players: [InputState, InputState] = [blankState(), blankState()];
+  private playerPrev = [emptyActions(), emptyActions()];
   private navDirPrev: Dir | null = null;
   private navRepeat = 0;
   enabled = true;
@@ -182,115 +223,61 @@ export class Input {
   /** Must be called once per frame before reading state. */
   poll(dt: number) {
     const s = this.state;
-    const held = emptyActions();
     const typing = isTyping();
-    let mx = 0;
-    let my = 0;
-    // Keyboard.
-    if (!typing) {
-      for (const code of this.keys) {
-        const a = KEYMAP[code];
-        if (a === 'left') mx -= 1;
-        else if (a === 'right') mx += 1;
-        else if (a === 'up') my += 1;
-        else if (a === 'down') my -= 1;
-        else if (a) held[a] = true;
-      }
+    const kb = this.readKeyboard(typing);
+
+    // Controllers: one reading per connected pad.
+    const list = typeof navigator.getGamepads === 'function' ? navigator.getGamepads() : [];
+    const raws = new Map<number, Raw>();
+    const pads: number[] = [];
+    const types = new Map<number, InputState['gamepadType']>();
+    let lastPad: Gamepad | null = null;
+    for (const p of list) {
+      if (!p || !p.connected) continue;
+      pads.push(p.index);
+      raws.set(p.index, this.readPad(p, dt));
+      types.set(p.index, padType(p.id));
+      lastPad = p;
     }
-    // Touch.
+    for (const k of [...this.padMem.keys()]) if (!raws.has(k)) this.padMem.delete(k);
+    this.pads = pads;
+
+    // Menus and single player: every device combined (keyboard, then touch, then controllers).
+    let mx = kb.mx;
+    let my = kb.my;
+    const held = { ...kb.held };
     if (Math.abs(this.touchMove.x) + Math.abs(this.touchMove.y) > 0.01) {
       mx = this.touchMove.x;
       my = this.touchMove.y;
     }
     for (const a of ACTIONS) if (this.touchHeld[a]) held[a] = true;
-
-    // Skill stick: arrow keys and swipes.
-    s.flick = null;
-    const now = performance.now();
-    if (this.arrowFlickAt && now >= this.arrowFlickAt) {
-      let fx = 0;
-      let fy = 0;
-      for (const c of this.arrowOrder) {
-        fx += ARROWS[c][0];
-        fy += ARROWS[c][1];
-      }
-      const len = Math.hypot(fx, fy);
-      if (len > 0 && !typing) s.flick = { x: fx / len, y: fy / len };
-      this.arrowFlickAt = 0;
-    }
+    let flick = kb.flick;
     if (this.touchFlick) {
-      s.flick = this.touchFlick;
+      flick = this.touchFlick;
       this.touchFlick = null;
     }
-
-    // Menu navigation sources.
-    let navDir: Dir | null = null;
+    let navDir = kb.navDir;
     const nav = emptyNav();
-    if (!typing && this.arrowOrder.length) {
-      const last = this.arrowOrder[this.arrowOrder.length - 1];
-      navDir = last === 'ArrowUp' ? 'up' : last === 'ArrowDown' ? 'down' : last === 'ArrowLeft' ? 'left' : 'right';
+    nav.confirm = kb.confirm;
+    nav.back = kb.back;
+    let padActive = false;
+    for (const r of raws.values()) {
+      for (const a of ACTIONS) if (r.held[a]) held[a] = true;
+      if (r.moving) {
+        mx = r.mx;
+        my = r.my;
+      }
+      if (r.flick) flick = r.flick;
+      if (r.navDir) navDir = r.navDir;
+      if (r.confirm) nav.confirm = true;
+      if (r.back) nav.back = true;
+      if (r.active) padActive = true;
     }
-    if (this.keysDown.has('Enter')) nav.confirm = true;
-    if (this.keysDown.has('Escape') || (!typing && this.keysDown.has('Backspace'))) nav.back = true;
-
-    // Gamepad.
-    this.flickCooldown = Math.max(0, this.flickCooldown - dt);
-    const pads = typeof navigator.getGamepads === 'function' ? navigator.getGamepads() : [];
-    let pad: Gamepad | null = null;
-    for (const p of pads) if (p && p.connected) pad = p;
-    if (pad) {
+    if (lastPad) {
       s.gamepadConnected = true;
-      const id = pad.id.toLowerCase();
-      s.gamepadType = /054c|dualsense|dualshock|playstation|wireless controller/.test(id) ? 'ps' : /xbox|045e|xinput/.test(id) ? 'xbox' : 'generic';
-      const b = (i: number) => !!pad!.buttons[i]?.pressed;
-      const edge = (i: number) => b(i) && !this.padPrev[i];
-      const ax = pad.axes[0] ?? 0;
-      const ay = pad.axes[1] ?? 0;
-      const dead = 0.18;
-      const mag = Math.hypot(ax, ay);
-      let padActive = false;
-      if (mag > dead) {
-        const scaled = Math.min(1, (mag - dead) / (1 - dead));
-        mx = (ax / mag) * scaled;
-        my = (-ay / mag) * scaled;
-        padActive = true;
-      }
-      if (b(12)) my = 1;
-      if (b(13)) my = -1;
-      if (b(14)) mx = -1;
-      if (b(15)) mx = 1;
-      // 2K layout (standard mapping: 0 Cross/A, 1 Circle/B, 2 Square/X, 3 Triangle/Y).
-      if (b(2)) held.a = true;
-      if (b(0)) held.b = true;
-      if (b(1)) held.x = true;
-      if (b(3)) held.y = true;
-      if (b(7) || (pad.buttons[7]?.value ?? 0) > 0.25) held.sprint = true;
-      if (b(4)) held.pick = true; // L1 / LB: set or call a screen
-      if (b(9)) held.pause = true;
-      // Menu navigation: D-pad, left stick, Cross/A select, Circle/B back.
-      if (b(12)) navDir = 'up';
-      else if (b(13)) navDir = 'down';
-      else if (b(14)) navDir = 'left';
-      else if (b(15)) navDir = 'right';
-      else if (Math.max(Math.abs(ax), Math.abs(ay)) > 0.6) navDir = Math.abs(ax) > Math.abs(ay) ? (ax > 0 ? 'right' : 'left') : ay > 0 ? 'down' : 'up';
-      if (edge(0)) nav.confirm = true;
-      if (edge(1)) nav.back = true;
-      // Skill stick flick: the right stick snapping out from rest.
-      const rx = pad.axes[2] ?? 0;
-      const ry = pad.axes[3] ?? 0;
-      const rmag = Math.hypot(rx, ry);
-      if (rmag > 0.7 && this.rightStickPrev < 0.35 && this.flickCooldown <= 0) {
-        s.flick = { x: rx / rmag, y: -ry / rmag };
-        this.flickCooldown = 0.15;
-      }
-      this.rightStickPrev = rmag;
-      for (let i = 0; i < pad.buttons.length; i++) {
-        if (pad.buttons[i]?.pressed) padActive = true;
-        this.padPrev[i] = !!pad.buttons[i]?.pressed;
-      }
-      if (rmag > 0.5) padActive = true;
-      if (padActive) s.lastDevice = 'gamepad';
-    }
+      s.gamepadType = padType(lastPad.id);
+    } else s.gamepadConnected = false;
+    if (padActive) s.lastDevice = 'gamepad';
 
     // Directional nav with auto-repeat.
     if (navDir) {
@@ -307,26 +294,180 @@ export class Input {
     }
     this.navDirPrev = navDir;
     s.nav = nav;
+    this.finish(s, this.prevHeld, mx, my, held, flick, kb.tapped);
 
+    // Co-op: each player reads only their own devices.
+    if (this.coop) {
+      for (const i of [0, 1] as const) {
+        const ps = this.players[i];
+        let px = 0;
+        let py = 0;
+        const ph = emptyActions();
+        let pf: { x: number; y: number } | null = null;
+        let tapped = new Set<Action>();
+        let usedPad: number | null = null;
+        for (const src of this.coop[i]) {
+          const r = src === 'kb' ? kb : raws.get(src);
+          if (!r) continue;
+          for (const a of ACTIONS) if (r.held[a]) ph[a] = true;
+          if (r.moving) {
+            px = r.mx;
+            py = r.my;
+          }
+          if (r.flick) pf = r.flick;
+          if (src === 'kb') {
+            tapped = kb.tapped;
+            if (kb.active) ps.lastDevice = 'keyboard';
+          } else {
+            usedPad = src;
+            if (r.active) ps.lastDevice = 'gamepad';
+          }
+        }
+        ps.gamepadConnected = usedPad !== null;
+        ps.gamepadType = usedPad !== null ? types.get(usedPad) ?? null : null;
+        if (usedPad === null) ps.lastDevice = 'keyboard';
+        else if (!this.coop[i].includes('kb')) ps.lastDevice = 'gamepad';
+        this.finish(ps, this.playerPrev[i], px, py, ph, pf, tapped);
+      }
+    }
+    this.keysDown.clear();
+  }
+
+  /** Whether a co-op player has a connected device (a player whose controller dropped is handed to the AI). */
+  playerConnected(i: 0 | 1): boolean {
+    if (!this.coop) return i === 0;
+    return this.coop[i].some((src) => src === 'kb' || this.pads.includes(src));
+  }
+
+  /** Movement, held/pressed/released edges and the flick for one output state. */
+  private finish(st: InputState, prev: Record<Action, boolean>, mx: number, my: number, held: Record<Action, boolean>, flick: { x: number; y: number } | null, tapped: Set<Action>) {
     const len = Math.hypot(mx, my);
     if (len > 1) {
       mx /= len;
       my /= len;
     }
-    s.move.x = this.enabled ? mx : 0;
-    s.move.y = this.enabled ? my : 0;
+    st.move.x = this.enabled ? mx : 0;
+    st.move.y = this.enabled ? my : 0;
     for (const a of ACTIONS) {
       // Keyboard taps that start and end between two frames still count as a press.
-      const tapped = !typing && [...this.keysDown].some((c) => KEYMAP[c] === a);
-      const h = this.enabled && (held[a] || tapped);
-      s.held[a] = this.enabled && held[a];
-      s.pressed[a] = h && !this.prevHeld[a];
-      s.released[a] = !s.held[a] && this.prevHeld[a];
-      this.prevHeld[a] = s.held[a];
+      const h = this.enabled && (held[a] || tapped.has(a));
+      st.held[a] = this.enabled && held[a];
+      st.pressed[a] = h && !prev[a];
+      st.released[a] = !st.held[a] && prev[a];
+      prev[a] = st.held[a];
     }
-    s.sprint = s.held.sprint;
-    if (!this.enabled) s.flick = null;
-    this.keysDown.clear();
+    st.sprint = st.held.sprint;
+    st.flick = this.enabled ? flick : null;
+  }
+
+  private readKeyboard(typing: boolean): Raw {
+    const held = emptyActions();
+    let mx = 0;
+    let my = 0;
+    if (!typing) {
+      for (const code of this.keys) {
+        const a = KEYMAP[code];
+        if (a === 'left') mx -= 1;
+        else if (a === 'right') mx += 1;
+        else if (a === 'up') my += 1;
+        else if (a === 'down') my -= 1;
+        else if (a) held[a] = true;
+      }
+    }
+    // Skill stick: the arrow keys.
+    let flick: { x: number; y: number } | null = null;
+    const now = performance.now();
+    if (this.arrowFlickAt && now >= this.arrowFlickAt) {
+      let fx = 0;
+      let fy = 0;
+      for (const c of this.arrowOrder) {
+        fx += ARROWS[c][0];
+        fy += ARROWS[c][1];
+      }
+      const len = Math.hypot(fx, fy);
+      if (len > 0 && !typing) flick = { x: fx / len, y: fy / len };
+      this.arrowFlickAt = 0;
+    }
+    let navDir: Dir | null = null;
+    if (!typing && this.arrowOrder.length) {
+      const last = this.arrowOrder[this.arrowOrder.length - 1];
+      navDir = last === 'ArrowUp' ? 'up' : last === 'ArrowDown' ? 'down' : last === 'ArrowLeft' ? 'left' : 'right';
+    }
+    const tapped = new Set<Action>();
+    if (!typing) for (const c of this.keysDown) if (KEYMAP[c] && (ACTIONS as string[]).includes(KEYMAP[c])) tapped.add(KEYMAP[c] as Action);
+    return {
+      mx,
+      my,
+      moving: mx !== 0 || my !== 0,
+      held,
+      tapped,
+      flick,
+      navDir,
+      confirm: this.keysDown.has('Enter'),
+      back: this.keysDown.has('Escape') || (!typing && this.keysDown.has('Backspace')),
+      active: this.keys.size > 0 || this.keysDown.size > 0,
+    };
+  }
+
+  private readPad(pad: Gamepad, dt: number): Raw {
+    let mem = this.padMem.get(pad.index);
+    if (!mem) this.padMem.set(pad.index, (mem = { prev: [], rightPrev: 0, flickCd: 0 }));
+    mem.flickCd = Math.max(0, mem.flickCd - dt);
+    const held = emptyActions();
+    const b = (i: number) => !!pad.buttons[i]?.pressed;
+    const edge = (i: number) => b(i) && !mem!.prev[i];
+    const ax = pad.axes[0] ?? 0;
+    const ay = pad.axes[1] ?? 0;
+    const dead = 0.18;
+    const mag = Math.hypot(ax, ay);
+    let mx = 0;
+    let my = 0;
+    let moving = false;
+    let active = false;
+    if (mag > dead) {
+      const scaled = Math.min(1, (mag - dead) / (1 - dead));
+      mx = (ax / mag) * scaled;
+      my = (-ay / mag) * scaled;
+      moving = true;
+      active = true;
+    }
+    if (b(12)) [my, moving] = [1, true];
+    if (b(13)) [my, moving] = [-1, true];
+    if (b(14)) [mx, moving] = [-1, true];
+    if (b(15)) [mx, moving] = [1, true];
+    // 2K layout (standard mapping: 0 Cross/A, 1 Circle/B, 2 Square/X, 3 Triangle/Y).
+    if (b(2)) held.a = true;
+    if (b(0)) held.b = true;
+    if (b(1)) held.x = true;
+    if (b(3)) held.y = true;
+    if (b(7) || (pad.buttons[7]?.value ?? 0) > 0.25) held.sprint = true;
+    if (b(4)) held.pick = true; // L1 / LB: set or call a screen
+    if (b(9)) held.pause = true;
+    // Menu navigation: D-pad, left stick, Cross/A select, Circle/B back.
+    let navDir: Dir | null = null;
+    if (b(12)) navDir = 'up';
+    else if (b(13)) navDir = 'down';
+    else if (b(14)) navDir = 'left';
+    else if (b(15)) navDir = 'right';
+    else if (Math.max(Math.abs(ax), Math.abs(ay)) > 0.6) navDir = Math.abs(ax) > Math.abs(ay) ? (ax > 0 ? 'right' : 'left') : ay > 0 ? 'down' : 'up';
+    const confirm = edge(0);
+    const back = edge(1);
+    // Skill stick flick: the right stick snapping out from rest.
+    let flick: { x: number; y: number } | null = null;
+    const rx = pad.axes[2] ?? 0;
+    const ry = pad.axes[3] ?? 0;
+    const rmag = Math.hypot(rx, ry);
+    if (rmag > 0.7 && mem.rightPrev < 0.35 && mem.flickCd <= 0) {
+      flick = { x: rx / rmag, y: -ry / rmag };
+      mem.flickCd = 0.15;
+    }
+    mem.rightPrev = rmag;
+    for (let i = 0; i < pad.buttons.length; i++) {
+      if (pad.buttons[i]?.pressed) active = true;
+      mem.prev[i] = !!pad.buttons[i]?.pressed;
+    }
+    if (rmag > 0.5) active = true;
+    return { mx, my, moving, held, tapped: new Set(), flick, navDir, confirm, back, active };
   }
 
   consume(action: Action) {
