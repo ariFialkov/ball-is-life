@@ -8,6 +8,7 @@ import type { PlayerDef, TeamDef } from '../data/teams.ts';
 import { audio } from '../engine/audio.ts';
 import { buttonNames } from '../engine/input.ts';
 import { clamp } from '../core/rng.ts';
+import { dunkBallPos, evalDunk, newDunkFrame, planDunk, type DunkFrame, type DunkPlan } from '../match/dunk.ts';
 import { ContestScene, ReleaseMeter, type ContestOptions, type StandingRow } from './base.ts';
 import { launchJumper, plannedMiss, releaseError } from './shotPhysics.ts';
 import { USER, planRounds, rank, roundTargets, type Id, type RoundPlan } from './plan.ts';
@@ -91,6 +92,9 @@ interface Run {
   kin: { segs: { from: THREE.Vector3; v0: THREE.Vector3; t0: number; dur: number }[]; t: number; arrive: number; hit: boolean; done: boolean; bounced: boolean } | null;
   /** Dunk in progress (seconds into it). */
   dunkT: number | null;
+  /** The dunk station's planned dunk (same planner as in-game dunks). */
+  dplan?: DunkPlan;
+  dframe?: DunkFrame;
   speed: number;
   waypoints: THREE.Vector3[];
   wp: number;
@@ -771,46 +775,72 @@ class SkillsChallenge {
     }
   }
 
-  /** The dunk: leap at the rim and throw it down. */
+  /** The dunk: the same planned, fully animated dunk as in a game (gather, takeoff, slam, maybe a hang). */
   private startDunk(r: Run) {
+    const c = r.char;
+    const p = c.root.position;
     r.dunkT = 0;
     r.busy = true;
-    r.char.setState('dunk');
+    r.dplan = planDunk({
+      pos: p,
+      vel: r.vel,
+      yaw: c.root.rotation.y,
+      h: r.def.height,
+      ballHand: c.handedness,
+      rating: r.def.ratings.dunk,
+      rim: new THREE.Vector3(RIM_X, RIM_H, 0),
+      attack: 1,
+      defender: null,
+      ball: r.ball.pos,
+      seed: (Math.sin(this.scene.time * 37.1 + r.id * 3.7) * 9631.7) % 1,
+    });
+    r.dframe = r.dframe ?? newDunkFrame();
+    r.vel.set(0, 0, 0);
+    c.setState('dunk');
     r.ball.mode = 'held';
   }
 
   private stepDunk(r: Run, dt: number) {
     const s = this.scene;
     const c = r.char;
-    const p = c.root.position;
+    const plan = r.dplan!;
     r.dunkT! += dt;
     const t = r.dunkT!;
-    // Fly in to just short of the rim.
-    const to = new THREE.Vector3(RIM_X - 0.55, 0, 0);
-    if (t < 0.55) p.lerp(to, Math.min(1, dt * 6));
-    r.facing = Math.atan2(RIM_X - p.x, -p.z);
-    if (t < 0.5) {
-      const hand = c.handWorld(new THREE.Vector3());
-      r.ball.place(hand.x, hand.y, hand.z);
-      r.ball.syncVisual();
-    } else if (r.ball.mode === 'held') {
-      // Thrown down through the rim.
-      r.ball.place(RIM_X - 0.03, RIM_H + 0.25, 0);
-      r.ball.vel.set(0, -4.6, 0);
-      r.ball.mode = 'shot';
-      r.ball.shot = { side: 1, willMake: false, shooterTeam: 0, shooterIndex: 0, value: 2, releasedAt: s.time, scored: false, touchedRim: false };
-      this.app.camera.shake = 0.2;
-      // Thrown straight down through the middle of the rim: it always goes.
-      s.track(r.ball, () => {
-        audio.cheer(0.7);
-        r.stage = 'logo';
-        if (r.id === USER) s.prompt.textContent = 'SLAM! · OUT TO THE LOGO';
-        r.dunkT = null;
-        r.busy = false;
-        r.regain = 0.3;
-      });
+    const f = evalDunk(plan, t, r.dframe!);
+    c.root.position.set(f.root.x, 0, f.root.z);
+    c.root.rotation.y = r.facing = f.yaw;
+    Object.assign(c.dk, f.body);
+    c.dkHands = f.hands;
+    r.vel.set(0, 0, 0);
+    if (r.ball.mode === 'held') {
+      if (t < plan.tRel) {
+        // In the hands (positioned after the pose update, below).
+        this.dunkHeld = r;
+      } else {
+        // Thrown straight down through the middle of the rim: it always goes.
+        const bp = r.ball.pos;
+        r.ball.vel.set(clamp((RIM_X - bp.x) / 0.09, -3, 3), -5.5, clamp(-bp.z / 0.09, -3, 3));
+        r.ball.mode = 'shot';
+        r.ball.shot = { side: 1, willMake: true, shooterTeam: 0, shooterIndex: 0, value: 2, releasedAt: s.time, scored: false, touchedRim: false, dunk: true };
+        this.app.camera.shake = 0.2;
+        s.track(r.ball, () => {
+          audio.cheer(0.7);
+          if (r.id === USER) s.prompt.textContent = 'SLAM! · OUT TO THE LOGO';
+        });
+      }
+    }
+    if (t >= plan.tEnd) {
+      // Landed: on to the logo.
+      r.stage = 'logo';
+      r.dunkT = null;
+      r.busy = false;
+      r.regain = 0.3;
+      c.setState('idleBall');
     }
   }
+
+  /** The runner whose ball sits in his hands this frame (placed once the pose has updated). */
+  private dunkHeld: Run | null = null;
 
   private skipRun(r: Run) {
     r.time = (this.targets.get(r.id) ?? r.time) - r.penalties;
@@ -900,6 +930,11 @@ class SkillsChallenge {
     c.root.rotation.y += diff * Math.min(1, dt * 10);
     c.dribbling = c.state === 'dribble' && !r.busy && r.ball.mode !== 'shot' && r.ball.mode !== 'pass';
     c.update(dt, clamp(r.vel.length() / 6.6, 0, 1));
+    if (this.dunkHeld === r && r.dplan && r.dframe) {
+      dunkBallPos(c, r.dframe, r.dplan, r.ball.pos, dt);
+      r.ball.syncVisual();
+      this.dunkHeld = null;
+    }
     if (!r.busy && r.ball.mode !== 'shot' && r.ball.mode !== 'pass' && !r.kin) this.dribble(r);
     this.checkGates(r, prevX);
     this.tasks(r, dt);

@@ -10,6 +10,7 @@ import { APRON, BALL_R, HALF_L, HALF_W, PLAYER_RADIUS, RIM_H, RIM_R, RIM_X, SPRI
 import type { Input } from '../engine/input.ts';
 import { audio } from '../engine/audio.ts';
 import { Director } from './director.ts';
+import { cancelHang, dunkBallPos, evalDunk, newDunkFrame, planDunk, type DunkContext, type DunkFrame, type DunkPlan } from './dunk.ts';
 
 export interface Stats {
   pts: number;
@@ -44,6 +45,8 @@ interface Action {
   passStyle?: PassStyle;
   /** Jump shot fading away from the basket (0..1): drifts back, separates from the defender, harder to make. */
   fade?: number;
+  /** A dunk's plan (variation, path, timing). */
+  dunk?: DunkPlan;
 }
 
 /**
@@ -88,6 +91,8 @@ export interface InboundState {
 }
 
 export interface Athlete {
+  /** This frame's dunk evaluation (while dunking). */
+  dunkFrame?: DunkFrame;
   team: 0 | 1;
   slot: number;
   def: PlayerDef;
@@ -282,6 +287,8 @@ export class Match {
   paused = false;
   /** Test hook: 'ai' lets the bots drive the controlled player, 'stall' makes the controlled player hold the ball and run from defenders. */
   autopilot: 'ai' | 'stall' | null = null;
+  /** Test hook: pin the next dunks' variation. */
+  dunkForce: DunkContext['force'] = null;
   directorMisses = 0;
   /** Telemetry counters (event type -> count) and time spent per phase. */
   readonly counts: Record<string, number> = {};
@@ -722,7 +729,8 @@ export class Match {
       a.move = null;
       a.breakout = false;
       a.oobPush = 0;
-      if (a.action.type !== 'none' && a.action.type !== 'catch') a.action.type = 'none';
+      // (A dunker finishes the dunk: the hang on the rim and the landing play out through the dead ball.)
+      if (a.action.type !== 'none' && a.action.type !== 'catch' && a.action.type !== 'dunk') a.action.type = 'none';
       a.reactAt = this.time + this.rng.float(0.05, 0.45);
     }
     this.opts.camera.attackDir = dir;
@@ -1741,6 +1749,28 @@ export class Match {
           if (this.isCtl(a)) this.events.push({ type: 'tip', team: a.team, text: 'FADEAWAY' });
         } else a.vel.multiplyScalar(0.2);
         a.char.fade = fade;
+      } else if (type === 'dunk') {
+        // Plan the whole dunk from the approach: side and angle, speed, ball hand, a defender in the way.
+        const { who } = this.nearestOpponent(a);
+        const plan = planDunk({
+          pos: a.pos,
+          vel: a.vel,
+          yaw: a.yaw,
+          h: a.def.height,
+          ballHand: a.ballHand,
+          rating: a.def.ratings.dunk,
+          rim: new THREE.Vector3(b.x, RIM_H, b.z),
+          attack: this.attackDir(a.team),
+          defender: who && hdist(who.pos, a.pos) < 2.6 ? who.pos : null,
+          ball: this.ball.pos,
+          seed: (Math.sin(this.time * 91.73 + a.slot * 12.31 + a.team * 5.17) * 43758.5453) % 1,
+          force: this.dunkForce,
+        });
+        a.action.dunk = plan;
+        a.action.dur = plan.tEnd;
+        a.action.releaseAt = plan.tRel;
+        a.dunkFrame = a.dunkFrame ?? newDunkFrame();
+        a.facing = a.yaw;
       } else {
         // Leap toward the rim.
         const dx = b.x - a.pos.x;
@@ -2002,16 +2032,22 @@ export class Match {
     const side = this.attackDir(a.team);
     a.stats.fga++;
     if (three) a.stats.tpa++;
-    // Ball leaves the hands.
+    // Ball leaves the hands (a dunk lets go of it exactly where the palm has it).
     this.holder = null;
-    const hand = a.char.handWorld(this.tmp);
-    this.ball.pos.set(hand.x, Math.max(hand.y, 1.6 + a.char.airHeight), hand.z);
+    if (type !== 'dunk' || !a.action.dunk) {
+      const hand = a.char.handWorld(this.tmp);
+      this.ball.pos.set(hand.x, Math.max(hand.y, 1.6 + a.char.airHeight), hand.z);
+    }
     this.touch(a);
     // A shot ends team control: an offensive rebound may come back across half court.
     this.frontcourt = false;
     this.backcourtTime = 0;
     if (blocked && blocker) this.defenseTouch(blocker);
     if (blocked) {
+      if (a.action.dunk) {
+        cancelHang(a.action.dunk);
+        a.action.dur = a.action.dunk.tEnd;
+      }
       this.ball.mode = 'loose';
       this.ball.shot = null;
       const away = this.tmp2.set(-side * this.rng.float(1, 3), 2.5, this.rng.float(-3, 3));
@@ -2022,10 +2058,32 @@ export class Match {
     this.ball.shot = { side, willMake, shooterTeam: a.team, shooterIndex: a.slot, value: three ? 3 : 2, releasedAt: this.time, scored: false, touchedRim: false };
     const target = this.tmp2.set(basket.x, RIM_H + 0.02, 0);
     if (type === 'dunk') {
-      // Slam: the ball is pushed down through the rim from above.
-      this.ball.pos.set(basket.x - side * 0.1, RIM_H + 0.35, 0);
-      this.ball.vel.set(0, willMake ? -4 : -1.5, 0);
-      if (!willMake) this.ball.vel.set(-side * 2.5, 1.5, this.rng.float(-2, 2));
+      const plan = a.action.dunk;
+      this.ball.shot.dunk = true;
+      if (plan) {
+        // Slam: thrown straight down from the hand, through the middle of the rim. A miss is
+        // hammered onto the front of the rim and kicks out.
+        const bp = this.ball.pos;
+        if (willMake) this.ball.vel.set(clamp((basket.x - bp.x) / 0.09, -3, 3), -5.5, clamp((basket.z - bp.z) / 0.09, -3, 3));
+        else {
+          const fx = basket.x - plan.dir.x * (RIM_R + 0.02);
+          const fz = basket.z - plan.dir.z * (RIM_R + 0.02);
+          this.ball.vel.set((fx - bp.x) / 0.08, -0.6, (fz - bp.z) / 0.08);
+          this.ball.shot.reject = true;
+        }
+        // Dunked on: the defender under it is knocked back and stays down a beat.
+        if (plan.contact) {
+          const { who } = this.nearestOpponent(a);
+          if (who && hdist(who.pos, a.pos) < 1.6) {
+            who.stunned = Math.max(who.stunned, 0.8);
+            who.vel.addScaledVector(plan.dir, 1.8);
+          }
+        }
+      } else {
+        this.ball.pos.set(basket.x - side * 0.1, RIM_H + 0.35, 0);
+        this.ball.vel.set(0, willMake ? -4 : -1.5, 0);
+        if (!willMake) this.ball.vel.set(-side * 2.5, 1.5, this.rng.float(-2, 2));
+      }
       this.events.push({ type: 'dunk', team: a.team, text: willMake ? 'THROWS IT DOWN!' : 'RIM REJECTS IT', athlete: a });
       if (willMake) {
         this.opts.camera.shake = 0.25;
@@ -2166,6 +2224,14 @@ export class Match {
 
   private moveAthlete(a: Athlete, dt: number) {
     const act = a.action.type;
+    if (act === 'dunk' && a.action.dunk && a.dunkFrame) {
+      // The dunk drives the body exactly (path, height, facing).
+      const f = evalDunk(a.action.dunk, a.action.t, a.dunkFrame);
+      a.vel.set((f.root.x - a.pos.x) / Math.max(dt, 1e-4), 0, (f.root.z - a.pos.z) / Math.max(dt, 1e-4));
+      a.pos.set(f.root.x, 0, f.root.z);
+      a.facing = a.yaw = f.yaw;
+      return;
+    }
     const userDriven = this.isUserDriven(a);
     const frozen = act === 'shoot' || act === 'block' || act === 'steal' || act === 'pass';
     const ib = this.inbound;
@@ -2466,16 +2532,16 @@ export class Match {
         if (d < minD && d > 1e-4) {
           const nx = dx / d;
           const nz = dz / d;
-          const aSet = a.screen?.phase === 'set';
-          const bSet = b.screen?.phase === 'set';
-          // A planted screener does not move; whoever runs into them takes all of it.
+          // A planted screener (or a player in the air on a dunk) does not move; whoever runs into them takes all of it.
+          const aSet = a.screen?.phase === 'set' || a.action.type === 'dunk';
+          const bSet = b.screen?.phase === 'set' || b.action.type === 'dunk';
           const wa = aSet && !bSet ? 0 : bSet && !aSet ? 1 : 0.5;
           const push = minD - d;
           a.pos.x -= nx * push * wa;
           a.pos.z -= nz * push * wa;
           b.pos.x += nx * push * (1 - wa);
           b.pos.z += nz * push * (1 - wa);
-          if (aSet !== bSet) this.screenContact(aSet ? a : b, aSet ? b : a);
+          if (aSet !== bSet && (a.screen?.phase === 'set' || b.screen?.phase === 'set')) this.screenContact(aSet ? a : b, aSet ? b : a);
         }
       }
     }
@@ -2534,6 +2600,15 @@ export class Match {
     const fwd = a.vel.x * Math.sin(a.yaw) + a.vel.z * Math.cos(a.yaw);
     c.strideDir = speed > 0.6 && fwd < -0.35 * speed ? -1 : 1;
     c.root.position.set(a.pos.x, 0, a.pos.z);
+    if (act === 'dunk' && a.action.dunk && a.dunkFrame) {
+      const f = a.dunkFrame;
+      Object.assign(c.dk, f.body);
+      c.dkHands = f.hands;
+      c.root.rotation.y = f.yaw;
+      c.dribbling = false;
+      c.update(dt, 0);
+      return;
+    }
     let diff = a.facing - a.yaw;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     a.yaw += diff * Math.min(1, dt * 12);
@@ -2601,7 +2676,9 @@ export class Match {
     if (this.holder) {
       const a = this.holder;
       const act = a.action.type;
-      if (act === 'shoot' || act === 'layup' || act === 'dunk' || act === 'pass') {
+      if (act === 'dunk' && a.action.dunk && a.dunkFrame) {
+        dunkBallPos(a.char, a.dunkFrame, a.action.dunk, b.pos, dt);
+      } else if (act === 'shoot' || act === 'layup' || act === 'dunk' || act === 'pass') {
         // Ball in the hands (two-hand set point).
         const hand = a.char.handWorld(this.tmp);
         const fx = Math.sin(a.facing);
@@ -2714,7 +2791,8 @@ export class Match {
       const isU = (x: Athlete) => userList.includes(x);
       const reachOf = (x: Athlete) => 0.72 + Math.max(0, x.def.height - 1.9) * 0.9 + (x.action.type === 'block' ? 0.3 : 0) + (isU(x) ? 0.35 : 0);
       const topOf = (x: Athlete) => 2.35 + (x.def.height - 2.0) * 0.6 + (x.action.type === 'block' ? 0.55 : 0) + (isU(x) ? 0.15 : 0);
-      const list = this.athletes.filter((x) => x.onCourt && hdist(x.pos, b.pos) < reachOf(x) && b.pos.y < topOf(x));
+      // (A player still in the air or hanging on the rim after a dunk can't take it.)
+      const list = this.athletes.filter((x) => x.onCourt && x.action.type !== 'dunk' && hdist(x.pos, b.pos) < reachOf(x) && b.pos.y < topOf(x));
       // The user's player gets first claim when the ball is in reach; then nearest first.
       list.sort((x, y) => (isU(x) !== isU(y) ? (isU(x) ? -1 : 1) : hdist(x.pos, b.pos) - hdist(y.pos, b.pos)));
       for (const x of list) {
@@ -2787,7 +2865,7 @@ export class Match {
       this.lastPasser.stats.ast++;
       this.events.push({ type: 'assist', team, text: `${this.lastPasser.def.last.toUpperCase()} WITH THE DIME`, athlete: this.lastPasser });
     }
-    const tag = s.value === 3 ? 'FROM DOWNTOWN!' : s.touchedRim ? 'GETS THE ROLL' : 'SWISH';
+    const tag = s.dunk ? 'SLAMS IT HOME' : s.value === 3 ? 'FROM DOWNTOWN!' : s.touchedRim ? 'GETS THE ROLL' : 'SWISH';
     this.events.push({ type: 'score', team, text: `${shooter ? shooter.def.last.toUpperCase() : ''} ${tag}`, points: s.value, athlete: shooter });
     this.crowdLevel = team === this.opts.homeIndex ? 0.9 : 0.5;
     audio.cheer(team === this.opts.homeIndex ? 0.9 : 0.4);

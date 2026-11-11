@@ -23,7 +23,7 @@ export class Ball {
   readonly spin = new THREE.Vector3();
   mode: BallMode = 'loose';
   /** Set when a shot is in the air: which basket (side) it is aimed at and whether it is scripted to go in. */
-  shot: { side: 1 | -1; willMake: boolean; shooterTeam: number; shooterIndex: number; value: 2 | 3; releasedAt: number; scored: boolean; touchedRim: boolean } | null = null;
+  shot: { side: 1 | -1; willMake: boolean; shooterTeam: number; shooterIndex: number; value: 2 | 3; releasedAt: number; scored: boolean; touchedRim: boolean; reject?: boolean; dunk?: boolean } | null = null;
   pass: { fromTeam: number; fromIndex: number; toIndex: number; launchedAt: number; style?: 'chest' | 'bounce' | 'lob'; flight?: number } | null = null;
   events: BallEvent[] = [];
   lastTouchTeam = -1;
@@ -108,7 +108,7 @@ export class Ball {
     p.addScaledVector(v, h);
 
     // Scoring check: crossing the rim plane downward inside the cylinder.
-    if (this.shot && !this.shot.scored) {
+    if (this.shot && !this.shot.scored && !this.shot.reject) {
       const side = this.shot.side;
       const rx = side * RIM_X;
       if (prevY >= RIM_H && p.y < RIM_H && v.y < 0) {
@@ -138,7 +138,13 @@ export class Ball {
         const ez = p.z - cz;
         const dist = Math.hypot(ex, ey, ez);
         const minDist = BALL_R + RIM_TUBE;
-        if (dist < minDist && dist > 1e-5) {
+        if (dist < minDist && dist > 1e-5 && this.shot?.reject && !this.shot.touchedRim) {
+          // A missed dunk: hammered onto the iron, it kicks up and out (never rattles in).
+          v.set(nx * 2.6, 3.4, nz * 2.6);
+          p.set(cx + nx * (minDist + 0.01), RIM_H + 0.02, cz + nz * (minDist + 0.01));
+          this.shot.touchedRim = true;
+          this.events.push({ type: 'rim', side, strength: 1 });
+        } else if (dist < minDist && dist > 1e-5) {
           const n = new THREE.Vector3(ex / dist, ey / dist, ez / dist);
           const vn = v.dot(n);
           if (vn < 0) {

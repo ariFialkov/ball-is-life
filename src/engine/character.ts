@@ -98,10 +98,57 @@ export interface FreestylePose {
   ikWeight: number;
 }
 
+/** In-game dunk body channels, set every frame by the match's dunk planner (see match/dunk.ts). */
+export interface DunkBody {
+  /** Jump height (m). */
+  air: number;
+  /** 0..1 the gather step (sink, ball to the chest). */
+  gather: number;
+  oneFoot: boolean;
+  /** The lead side: the dunking hand, and on a one-foot takeoff the knee that drives up. */
+  lead: 1 | -1;
+  /** 0..1 lead knee drive (one foot). */
+  knee: number;
+  /** 0..1 both knees tucked (two feet). */
+  tuck: number;
+  /** 0..1 heels kicked back (power slams, the hang). */
+  kick: number;
+  /** 0..1 legs split, lead knee up and out (posterizer). */
+  split: number;
+  /** 0..1 back arched (cocking a tomahawk / hammer, reaching back on a reverse). */
+  arch: number;
+  /** 0..1 chest folding over the rim at the slam. */
+  fold: number;
+  /** 0..1 hanging on the rim (legs dangling), and the swing (-1..1). */
+  hang: number;
+  swing: number;
+  /** 0..1 knees absorbing the landing. */
+  land: number;
+  /** Chest twist (hanging off one arm). */
+  twist: number;
+  /** The arm without a hand goal: its side (0 = none) and how high it is up for balance (0..1). */
+  free: 1 | -1 | 0;
+  freeUp: number;
+  /** Head pitch: -1 eyes up at the rim, +1 down through the slam. */
+  look: number;
+  /** 0..1 how far up the arms without a hand goal are (up for the ball, relaxing after the release). */
+  armsUp: number;
+}
+
+/** Where a hand goes (palm anchor, world), which way the palm faces, the wrist flex, and the IK weight. */
+export interface HandGoal {
+  target: THREE.Vector3;
+  normal: THREE.Vector3;
+  flex: number;
+  w: number;
+}
+
 /** States in which the body is on its feet and moving, so it reacts to the forces on it. */
 const GROUNDED_STATES = new Set<AnimState>(['idle', 'idleBall', 'run', 'dribble', 'defense', 'catch', 'screen']);
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
+const _w2 = new THREE.Vector3();
+const _q = new THREE.Quaternion();
 const wrapPi = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 // Rotation conventions (model faces +Z): a limb hanging down (-Y) swings
@@ -153,10 +200,11 @@ export class Character {
   crouch = 0;
   /** -1 runs the stride cycle backwards, for backpedalling. */
   strideDir: 1 | -1 = 1;
-  /** Arm path for the 'dunk' state (the 360 and reverse are body rotations driven by the caller). */
-  dunkStyle: 'two' | 'tomahawk' | 'windmill' | 'legs' = 'two';
-  /** Scales the dunk leap (dunk-contest athletes get up higher than an in-game dunk). */
-  jumpBoost = 1;
+  /** In-game dunk pose channels and hand goals (the match sets these each frame while dunking). */
+  readonly dk: DunkBody = { air: 0, gather: 0, oneFoot: true, lead: 1, knee: 0, tuck: 0, kick: 0, split: 0, arch: 0, fold: 0, hang: 0, swing: 0, land: 0, twist: 0, free: 0, freeUp: 0, look: 0, armsUp: 1 };
+  dkHands: { l: HandGoal | null; r: HandGoal | null } = { l: null, r: null };
+  /** Forearm roll per hand (radians about the hand's long axis), carried between frames. */
+  private roll = { l: 0, r: 0 };
   /** Fadeaway amount for the 'shoot' state (0 = squared-up jumper). */
   fade = 0;
   /** Freestyle dunk pose (dunk contest). */
@@ -295,6 +343,15 @@ export class Character {
     this.current.jump = target.jump;
     this.applyPose(this.current);
     this.dribbleStep(dt);
+    // Dunk: each hand to its goal, the forearm rolled so the palm faces the ball (or the rim).
+    if (this.state === 'dunk') {
+      this.root.updateMatrixWorld(true);
+      for (const side of ['l', 'r'] as const) {
+        const g = this.dkHands[side];
+        if (g && g.w > 0.001) this.solveHand(side, g);
+        else this.roll[side] *= 0.8;
+      }
+    }
     // Freestyle: the ball hand reaches its target (the rim for the slam, the ball on a lob).
     const fs = this.fs;
     if (this.state === 'freestyle' && fs.ikTarget && fs.ikWeight > 0.001) {
@@ -535,7 +592,7 @@ export class Character {
    * Two-bone IK: set the shoulder (pitch + spread), elbow and wrist of one arm so its palm anchor
    * reaches `target` (world), blended over the current pose by `w`.
    */
-  private reachArm(side: 'l' | 'r', target: THREE.Vector3, wrist: number, w: number) {
+  private reachArm(side: 'l' | 'r', target: THREE.Vector3, wrist: number, w: number, roll = 0) {
     const B = this.bones;
     const sh = B[`${side}Shoulder`];
     const el = B[`${side}Elbow`];
@@ -545,9 +602,11 @@ export class Character {
     const anchor = side === 'r' ? this.rHand.position : this.lHand.position;
     const cw = Math.cos(wrist);
     const sw = Math.sin(wrist);
-    const ex = wr.position.x + anchor.x;
-    const ey = wr.position.y + anchor.y * cw - anchor.z * sw;
-    const ez = wr.position.z + anchor.y * sw + anchor.z * cw;
+    // The palm anchor in the forearm frame: rolled about the hand's long axis, then flexed.
+    const azr = anchor.z * Math.cos(roll);
+    const ex = wr.position.x + anchor.x + anchor.z * Math.sin(roll);
+    const ey = wr.position.y + anchor.y * cw - azr * sw;
+    const ez = wr.position.z + anchor.y * sw + azr * cw;
     const ax = el.position.x;
     const ay = el.position.y;
     const az = el.position.z;
@@ -588,7 +647,38 @@ export class Character {
     };
     blend(`${side}Shoulder`, [x, 0, z]);
     blend(`${side}Elbow`, [elbowX, 0, 0]);
-    blend(`${side}Wrist`, [wrist, 0, 0]);
+    blend(`${side}Wrist`, [wrist, roll, 0]);
+  }
+
+  /**
+   * Put a hand on a goal: IK to the palm target, then roll the forearm so the palm faces the goal's
+   * normal (solved from this frame's arm, then the IK is re-run for the rolled hand).
+   */
+  private solveHand(side: 'l' | 'r', g: HandGoal) {
+    this.reachArm(side, g.target, g.flex, Math.min(1, g.w), this.roll[side]);
+    const el = this.bones[`${side}Elbow`];
+    el.updateWorldMatrix(true, false);
+    // Desired palm normal in the forearm frame; the palm normal after roll ψ and flex f is
+    // (sin ψ, -cos ψ sin f, cos ψ cos f), so the best ψ is atan2(n.x, -sin f n.y + cos f n.z).
+    const q = el.getWorldQuaternion(_q).invert();
+    const n = _v.copy(g.normal).applyQuaternion(q);
+    const f = g.flex;
+    const want = Math.max(-1.9, Math.min(1.9, Math.atan2(n.x, -Math.sin(f) * n.y + Math.cos(f) * n.z)));
+    this.roll[side] += (want - this.roll[side]) * Math.min(1, g.w);
+    this.reachArm(side, g.target, g.flex, Math.min(1, g.w), this.roll[side]);
+  }
+
+  /** The palm's facing direction (world): the hand's local +Z, where the palm anchor sits. */
+  palmNormal(side: 'l' | 'r', out: THREE.Vector3): THREE.Vector3 {
+    const wr = this.bones[`${side}Wrist`];
+    wr.updateWorldMatrix(true, false);
+    return out.set(0, 0, 1).applyQuaternion(wr.getWorldQuaternion(_q)).normalize();
+  }
+
+  /** Where the centre of a ball held in this palm is (world): palm anchor + normal * radius * k. */
+  palmBall(side: 'l' | 'r', radius: number, out: THREE.Vector3): THREE.Vector3 {
+    this.handWorld(out, side);
+    return out.addScaledVector(this.palmNormal(side, _w2), radius);
   }
 
   private applyPose(p: Pose) {
@@ -831,56 +921,84 @@ export class Character {
         break;
       }
       case 'dunk': {
-        const dur = 1.1;
-        const u = Math.min(1, t / dur);
-        const jumpT = clamp01((u - 0.05) / 0.85);
-        p.jump = Math.sin(jumpT * Math.PI) * 0.85 * this.jumpBoost;
-        const reach = smooth(clamp01((u - 0.08) / 0.3));
-        const slam = smooth(clamp01((u - 0.42) / 0.14));
-        const armX = -0.7 - 2.5 * reach + 1.1 * slam;
-        b[R] = [armX, 0, -hand * 0.15];
-        b[RE] = [-1.2 * (1 - reach) - 0.1 - 0.5 * slam, 0, 0];
-        b[L] = [armX + 0.3, 0, hand * 0.3];
-        b[LE] = [-1.2 * (1 - reach) - 0.1 - 0.5 * slam, 0, 0];
-        b[RW] = [-0.4 * reach + 1.0 * slam, 0, 0];
-        b[LW] = [-0.3 * reach + 0.8 * slam, 0, 0];
-        b.rHip = [-1.1 * reach, 0, 0.12];
-        b.rKnee = [1.5 * reach + 0.2, 0, 0];
-        b.lHip = [-0.6 * reach, 0, -0.12];
-        b.lKnee = [1.1 * reach + 0.2, 0, 0];
-        b.spine = [0.3 - 0.25 * slam, 0, 0];
-        b.head = [-0.4 * reach + 0.3 * slam, 0, 0];
-        if (this.dunkStyle === 'tomahawk') {
-          // One hand cocked behind the head, whipped up to full extension over the rim, then hammered down.
-          const cock = smooth(clamp01((u - 0.1) / 0.2)) * (1 - smooth(clamp01((u - 0.38) / 0.1)));
-          b[R] = [armX - 0.5 * cock, 0, -hand * 0.1];
-          b[RE] = [-1.9 * cock - 0.15 - 0.4 * slam, 0, 0];
-          b[RW] = [-0.9 * cock + 1.1 * slam, 0, 0];
-          b[L] = [-0.9, 0, hand * 0.7];
-          b[LE] = [-0.5, 0, 0];
-          b.spine = [0.1 - 0.35 * cock + 0.3 * slam, 0, 0];
-        } else if (this.dunkStyle === 'windmill') {
-          // The ball arm sweeps a full circle: forward, down, back, over the top and through.
-          const w = smooth(clamp01((u - 0.06) / 0.38));
-          b[R] = [-1.5 + 4.6 * w + 1.1 * slam, 0, -hand * 0.18];
-          b[RE] = [-0.1, 0, 0];
-          b[RW] = [0.2 + 0.8 * slam, 0, 0];
-          b[L] = [-1.0, 0, hand * 0.8];
-          b[LE] = [-0.6, 0, 0];
-          b.chest = [0, -hand * 0.35 * Math.sin(w * Math.PI), 0];
-        } else if (this.dunkStyle === 'legs') {
-          // Knees tuck high while the ball passes under them, then both hands come up to finish.
-          const under = Math.sin(Math.PI * clamp01((u - 0.1) / 0.32));
-          const up = smooth(clamp01((u - 0.36) / 0.12));
-          b.lHip = [-1.6 * under - 0.4 * up, 0, -0.35];
-          b.rHip = [-1.6 * under - 0.4 * up, 0, 0.35];
-          b.lKnee = [1.9 * under + 0.4, 0, 0];
-          b.rKnee = [1.9 * under + 0.4, 0, 0];
-          b.spine = [0.75 * under - 0.2 * up + 0.2 * slam, 0, 0];
-          b[R] = [-0.35 * (1 - up) - 3.0 * up + 1.1 * slam, 0, -hand * 0.15];
-          b[L] = [-0.35 * (1 - up) - 2.8 * up + 1.1 * slam, 0, hand * 0.15];
-          b[RE] = [-0.25 * (1 - up) - 0.1, 0, 0];
-          b[LE] = [-0.25 * (1 - up) - 0.1, 0, 0];
+        // Driven by the dunk planner (match/dunk.ts): the arms with goals are placed by IK after this.
+        const d = this.dk;
+        const ld = d.lead;
+        const LH = ld > 0 ? 'rHip' : 'lHip';
+        const LK = ld > 0 ? 'rKnee' : 'lKnee';
+        const TH = ld > 0 ? 'lHip' : 'rHip';
+        const TK = ld > 0 ? 'lKnee' : 'rKnee';
+        const outZ = (side: number) => (side > 0 ? 1 : -1);
+        p.jump = d.air;
+        // Gather: sink into the last step.
+        const g = d.gather;
+        p.hipsY = -0.16 * g - 0.2 * d.land;
+        b.lHip = [-0.45 * g, 0, -0.08];
+        b.rHip = [-0.45 * g, 0, 0.08];
+        b.lKnee = [0.12 + 0.9 * g, 0, 0];
+        b.rKnee = [0.12 + 0.9 * g, 0, 0];
+        // One foot: the lead knee drives up, the takeoff leg extends long behind. Two feet: both tuck.
+        if (d.oneFoot) {
+          b[LH] = [b[LH][0] - 1.3 * d.knee, 0, b[LH][2]];
+          b[LK] = [b[LK][0] + 1.45 * d.knee, 0, 0];
+          b[TH] = [b[TH][0] + 0.3 * d.knee, 0, b[TH][2]];
+          b[TK] = [b[TK][0] + 0.25 + 0.35 * d.knee, 0, 0];
+        } else {
+          b.lHip[0] -= 0.75 * d.tuck;
+          b.rHip[0] -= 0.75 * d.tuck;
+          b.lKnee[0] += 1.15 * d.tuck;
+          b.rKnee[0] += 1.15 * d.tuck;
+        }
+        // Posterizer: lead knee up and out, the other leg trailing.
+        if (d.split > 0) {
+          b[LH] = [b[LH][0] * (1 - d.split) - 1.45 * d.split, 0, b[LH][2] + outZ(ld) * 0.4 * d.split];
+          b[LK] = [b[LK][0] * (1 - d.split) + 1.5 * d.split, 0, 0];
+          b[TH] = [b[TH][0] * (1 - d.split) + 0.35 * d.split, 0, b[TH][2]];
+          b[TK] = [b[TK][0] * (1 - d.split) + 0.7 * d.split, 0, 0];
+        }
+        // Heels kicked back (power slam, the hang), and the legs swinging under the rim.
+        if (d.kick > 0) {
+          for (const [H, K] of [['lHip', 'lKnee'], ['rHip', 'rKnee']] as const) {
+            b[H][0] = b[H][0] * (1 - d.kick) + 0.15 * d.kick;
+            b[K][0] = b[K][0] * (1 - d.kick) + 1.25 * d.kick;
+          }
+        }
+        if (d.hang > 0) {
+          const sw = d.swing;
+          for (const [H, K, k] of [['lHip', 'lKnee', 1], ['rHip', 'rKnee', 0.85]] as const) {
+            b[H][0] = b[H][0] * (1 - d.hang) + (-0.25 - 0.35 * sw * k) * d.hang;
+            b[K][0] = b[K][0] * (1 - d.hang) + (0.5 + 0.3 * sw * k) * d.hang;
+          }
+        }
+        // Landing: knees and hips take it.
+        if (d.land > 0) {
+          b.lKnee[0] += 1.0 * d.land;
+          b.rKnee[0] += 1.0 * d.land;
+          b.lHip[0] -= 0.6 * d.land;
+          b.rHip[0] -= 0.6 * d.land;
+          b.lHip[2] -= 0.08 * d.land;
+          b.rHip[2] += 0.08 * d.land;
+        }
+        // Torso: lean into the gather, arch back to load, fold over the rim on the slam.
+        b.spine = [0.06 + 0.3 * g - 0.38 * d.arch + 0.42 * d.fold + 0.08 * d.hang + 0.35 * d.land, 0, 0];
+        b.chest = [0, d.twist, 0];
+        b.head = [-0.32 * Math.max(0, -d.look) + 0.25 * Math.max(0, d.look) + 0.25 * d.arch, -d.twist * 0.5, 0];
+        // Arms: up for the ball (the IK places the ones with goals); the free arm out for balance,
+        // and on the way down both come forward to land.
+        // Landing: arms come down to the sides, a little forward, hands soft.
+        const up = d.armsUp * (1 - Math.min(1, d.land * 1.6));
+        b.lShoulder = [-0.3 - 2.2 * up, 0, -0.18];
+        b.rShoulder = [-0.3 - 2.2 * up, 0, 0.18];
+        b.lElbow = [-0.35 - 0.25 * up, 0, 0];
+        b.rElbow = [-0.35 - 0.25 * up, 0, 0];
+        b.lWrist = [0.1, 0, 0];
+        b.rWrist = [0.1, 0, 0];
+        if (d.free) {
+          // The free arm swings out to the side for balance (never reaching at the rim).
+          const FA = d.free > 0 ? 'rShoulder' : 'lShoulder';
+          const FE = d.free > 0 ? 'rElbow' : 'lElbow';
+          b[FA] = [-0.35 - 0.45 * d.freeUp, 0, outZ(d.free) * (0.95 + 0.35 * d.freeUp)];
+          b[FE] = [-0.4 - 0.25 * d.freeUp, 0, 0];
         }
         break;
       }
