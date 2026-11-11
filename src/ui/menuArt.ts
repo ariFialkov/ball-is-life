@@ -136,7 +136,6 @@ function careerArt(p: Pal, num: string): string {
 </g>
 ${trim('M84,30 C88,56 112,56 116,30')}${trim('M134,30 C136,56 146,66 162,70')}${trim('M66,30 C64,56 54,66 38,70')}
 <path d="${shape}" fill="none" stroke="${p.hi}" stroke-width="1.4" opacity=".55"/>
-<text x="100" y="80" text-anchor="middle" font-family="${FONT}" font-weight="900" font-style="italic" font-size="13" letter-spacing="1" fill="#fff">BALL IS LIFE</text>
 <text x="100" y="150" text-anchor="middle" font-family="${FONT}" font-weight="900" font-style="italic" font-size="${num.length > 1 ? 66 : 74}" fill="#fff" stroke="${p.acc}" stroke-width="3.2" paint-order="stroke" stroke-linejoin="round">${num}</text>
 <ellipse cx="80" cy="64" rx="16" ry="6" transform="rotate(-20 80 64)" fill="#fff" opacity=".22" filter="url(#${i}-b3)"/>
 ${sparkle(170, 46, 8)}${sparkle(28, 120, 5, p.hi, 0.8)}`;
@@ -182,7 +181,6 @@ ${confetti}
 <rect x="58" y="152" width="84" height="28" rx="2" fill="url(#${i}-pl)"/>
 <rect x="58" y="152" width="84" height="3.4" fill="url(#${i}-mt)"/>
 <rect x="58" y="176.6" width="84" height="3.4" fill="url(#${i}-mt)"/>
-<text x="100" y="171" text-anchor="middle" font-family="${FONT}" font-weight="900" font-style="italic" font-size="12" letter-spacing="2" fill="${p.acc}">CHAMPIONS</text>
 <rect x="96" y="72" width="5" height="50" fill="#fff" opacity=".35" filter="url(#${i}-b3)"/>
 <ellipse cx="91" cy="38" rx="8" ry="4.5" transform="rotate(-30 91 38)" fill="#fff" opacity=".6" filter="url(#${i}-b3)"/>
 ${sparkle(128, 30, 10)}${sparkle(68, 100, 6, '#fff', 0.85)}${sparkle(146, 112, 5, p.hi, 0.9)}`;
